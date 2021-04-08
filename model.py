@@ -1,4 +1,6 @@
 import math
+import copy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
@@ -138,7 +140,6 @@ class Embeddings(nn.Module):
 
         self.dropout = Dropout(config.transformer["dropout_rate"])
 
-
     def forward(self, x):
         if self.hybrid:
             x, features = self.hybrid_model(x)
@@ -152,3 +153,81 @@ class Embeddings(nn.Module):
         embeddings = self.dropout(embeddings)
         return embeddings, features
 
+
+class Block(nn.Module):
+    """
+    This module creates a single block in the transformer. It consists of an attention layer followed by the
+    fully connected MLP layer, with Layer Norm after each layer. Between each layer is a skip connection.
+    The input and output dimensions are the same (B, N, D) where D is the hidden size, N is the number of
+    embeddings, and B is the batch size.
+    """
+    def __init__(self, config, vis):
+        super(Block, self).__init__()
+        self.hidden_size = config.hidden_size
+        self.attention_norm = LayerNorm(config.hidden_size, eps=1e-6)
+        self.ffn_norm = LayerNorm(config.hidden_size, eps=1e-6)
+        self.ffn = MLP(config)
+        self.attn = Attention(config, vis)
+
+    def forward(self, x):
+        h = x
+        x = self.attention_norm(x)
+        x, weights = self.attn(x)
+        x = x + h
+
+        h = x
+        x = self.ffn_norm(x)
+        x = self.ffn(x)
+        x = x + h
+        return x, weights
+
+
+class Encoder(nn.Module):
+    """
+    The encoder consists of num_layers copies of the Block module. The encoder is fed with the output of the
+    embeddings, and so has input dimensionality of (B, N, D) where B is the batch size, D is the hidden size and
+    N = HW/P^2 is the number of embeddings. As far as I can tell, this doesn't change the dimensionality of the
+    vector, so I'm not sure how it is an encoder. (Experimentally verified, this module does not change the
+    dimensionality of the input)
+    """
+    def __init__(self, config, vis):
+        super(Encoder, self).__init__()
+        self.vis = vis
+        self.layer = nn.ModuleList()
+        self.encoder_norm = LayerNorm(config.hidden_size, eps=1e-6)
+        for _ in range(config.transformer["num_layers"]):
+            layer = Block(config, vis)
+            # TODO Why does this need to be copied???
+            self.layer.append(copy.deepcopy(layer))
+
+    def forward(self, hidden_states):
+        attn_weights = []
+        for layer_block in self.layer:
+            hidden_states, weights = layer_block(hidden_states)
+            if self.vis:
+                attn_weights.append(weights)
+        encoded = self.encoder_norm(hidden_states)
+        return encoded, attn_weights
+
+
+class Transformer(nn.Module):
+    """
+    Transformer: This takes the image as input, creates the embeddings, then encodes the embeddings using the
+    encoder. The input has dimensions (B, W, H) and the output has dimensions (B, N, D) where B is the batch size,
+    N is the number of patches, D is the hidden size and H and W are the height and width of the images. This module
+    also returns the attention weights, which is the output of the softmax in the attention module, before it is
+    multiplied by the values tensor. As far as I can tell, this isn't used, so I'm not sure what the point of it is.
+    features is also returned, and this is the latent vectors generated between each of the 3 blocks in
+    ResNet (if operating in hybrid mode). This is passed into the decoder to provide skip connections, and higher
+    resolution spatial information to the decoder
+    """
+    def __init__(self, config, img_size, vis):
+        super(Transformer, self).__init__()
+        self.embeddings = Embeddings(config, img_size=img_size)
+        self.encoder = Encoder(config, vis)
+
+    def forward(self, input_ids):
+        embedding_output, features = self.embeddings(input_ids)
+        encoded, attn_weights = self.encoder(embedding_output)  # (B, n_patch, hidden)
+        # TODO What is the point of attn_weights and is it used?
+        return encoded, attn_weights, features
