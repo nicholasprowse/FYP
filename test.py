@@ -1,30 +1,30 @@
+import nibabel as nib
 import torch
-from model import VisionTransformer
-import ml_collections
+from matplotlib import pyplot as plt
+import json
+import os
+import util
 
-config = ml_collections.ConfigDict()
-config.patches = ml_collections.ConfigDict({'size': (16, 16)})
-config.hidden_size = 768
-config.transformer = ml_collections.ConfigDict()
-config.transformer.mlp_dim = 3072
-config.transformer.num_heads = 12
-config.transformer.num_layers = 12
-config.transformer.attention_dropout_rate = 0.0
-config.transformer.dropout_rate = 0.1
 
-config.representation_size = None
-config.resnet_pretrained_path = None
-config.pretrained_path = '../model/vit_checkpoint/imagenet21k/ViT-B_16.npz'
+def main():
+    path = '/Volumes/One Touch/Medical Decathlon Data/Task01_BrainTumour'
+    dataset = json.load(open(os.path.join(path, 'dataset.json')))
+    img = nib.load(os.path.join(path, dataset['training'][1]['image'])).get_fdata()
+    label = nib.load(os.path.join(path, dataset['training'][1]['label'])).get_fdata()
 
-config.decoder_channels = (256, 128, 64, 16)
-config.n_classes = 2
-config.activation = 'softmax'
-config.n_skip = 0
+    img = torch.Tensor(img)
+    label = torch.Tensor(label)
+    # print(label[0].shape)
+    channel = 2
+    encoding = util.one_hot(label, 4)
+    util.img2gif(img[:, :, :, channel], 2, 'tumor.gif', label=encoding)
+    util.img2gif(img[:, :, :, channel], 2, 'brain.gif')
+    # img2gif(label, 2, 'label.gif')
 
-img = torch.zeros((8, 3, 224, 224))
+    for i in range(4):
+        plt.imshow(encoding[i, :, :, 75], cmap='gray')
+        plt.savefig(f'encoding{i}.png')
 
-model = VisionTransformer(config)
 
-out = model(img)
-
-print(out.shape)
+if __name__ == '__main__':
+    main()
