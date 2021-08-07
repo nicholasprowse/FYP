@@ -1,5 +1,3 @@
-import math
-
 from os.path import join as pjoin
 from collections import OrderedDict
 
@@ -29,13 +27,29 @@ class StdConv2d(nn.Conv2d):
                         self.dilation, self.groups)
 
 
-def conv3x3(cin, cout, stride=1, groups=1, bias=False):
-    return StdConv2d(cin, cout, kernel_size=3, stride=stride,
+class StdConv3d(nn.Conv3d):
+    """
+    Convolutions with weight standardisation
+    Apparently this smooths the loss landscape and improves training
+    https://paperswithcode.com/method/weight-standardization
+    """
+    def forward(self, x):
+        w = self.weight
+        v, m = torch.var_mean(w, dim=[1, 2, 3], keepdim=True, unbiased=False)
+        w = (w - m) / torch.sqrt(v + 1e-5)
+        return F.conv3d(x, w, self.bias, self.stride, self.padding,
+                        self.dilation, self.groups)
+
+
+def conv3x3(cin, cout, dims=2, stride=1, groups=1, bias=False):
+    conv = StdConv2d if dims == 2 else StdConv3d
+    return conv(cin, cout, kernel_size=3, stride=stride,
                      padding=1, bias=bias, groups=groups)
 
 
-def conv1x1(cin, cout, stride=1, bias=False):
-    return StdConv2d(cin, cout, kernel_size=1, stride=stride,
+def conv1x1(cin, cout, dims=2, stride=1, bias=False):
+    conv = StdConv2d if dims == 2 else StdConv3d
+    return conv(cin, cout, kernel_size=1, stride=stride,
                      padding=0, bias=bias)
 
 
@@ -43,22 +57,22 @@ class PreActBottleneck(nn.Module):
     """Pre-activation (v2) bottleneck block.
     """
 
-    def __init__(self, cin, cout=None, cmid=None, stride=1):
+    def __init__(self, cin, cout=None, cmid=None, dims=2, stride=1):
         super().__init__()
         cout = cout or cin
         cmid = cmid or cout//4
 
         self.gn1 = nn.GroupNorm(32, cmid, eps=1e-6)
-        self.conv1 = conv1x1(cin, cmid, bias=False)
+        self.conv1 = conv1x1(cin, cmid, dims=dims, bias=False)
         self.gn2 = nn.GroupNorm(32, cmid, eps=1e-6)
-        self.conv2 = conv3x3(cmid, cmid, stride, bias=False)  # Original code has it on conv1!!
+        self.conv2 = conv3x3(cmid, cmid, dims=dims, stride=stride, bias=False)  # Original code has it on conv1!!
         self.gn3 = nn.GroupNorm(32, cout, eps=1e-6)
-        self.conv3 = conv1x1(cmid, cout, bias=False)
+        self.conv3 = conv1x1(cmid, cout, dims=dims, bias=False)
         self.relu = nn.ReLU(inplace=True)
 
-        if (stride != 1 or cin != cout):
+        if stride != 1 or cin != cout:
             # Projection also with pre-activation according to paper.
-            self.downsample = conv1x1(cin, cout, stride, bias=False)
+            self.downsample = conv1x1(cin, cout, dims=dims, stride=stride, bias=False)
             self.gn_proj = nn.GroupNorm(cout, cout)
 
     def forward(self, x):
@@ -113,6 +127,7 @@ class PreActBottleneck(nn.Module):
             self.gn_proj.weight.copy_(proj_gn_weight.view(-1))
             self.gn_proj.bias.copy_(proj_gn_bias.view(-1))
 
+
 class ResNetV2(nn.Module):
     """
     Implementation of Pre-activation (v2) ResNet mode.
@@ -124,50 +139,61 @@ class ResNetV2(nn.Module):
      (B,  64*width_factor, H//2, W//2)]
     """
 
-    def __init__(self, block_units, width_factor):
+    def __init__(self, config):
         super().__init__()
-        width = int(64 * width_factor)
+        width = int(64 * config.resnet.width_factor)
         self.width = width
-
+        self.dims = config.dims
+        conv = StdConv2d if config.dims == 2 else StdConv3d
         self.root = nn.Sequential(OrderedDict([
-            ('conv', StdConv2d(3, width, kernel_size=7, stride=2, bias=False, padding=3)),
+            ('conv', conv(3, width, kernel_size=7, stride=2, bias=False, padding=3)),
             ('gn', nn.GroupNorm(32, width, eps=1e-6)),
             ('relu', nn.ReLU(inplace=True)),
-            # ('pool', nn.MaxPool2d(kernel_size=3, stride=2, padding=0))
         ]))
+
+        pool = nn.MaxPool2d if config.dims == 2 else nn.MaxPool3d
+        self.pool = pool(kernel_size=3, stride=2, padding=0)
 
         self.body = nn.Sequential(OrderedDict([
             ('block1', nn.Sequential(OrderedDict(
-                [('unit1', PreActBottleneck(cin=width, cout=width*4, cmid=width))] +
-                [(f'unit{i:d}', PreActBottleneck(cin=width*4, cout=width*4, cmid=width)) for i in range(2, block_units[0] + 1)],
+                [('unit1', PreActBottleneck(cin=width, cout=width*4, cmid=width, dims=config.dims))] +
+                [(f'unit{i:d}', PreActBottleneck(cin=width*4, cout=width*4, cmid=width, dims=config.dims))
+                    for i in range(2, config.resnet.num_layers[0] + 1)],
                 ))),
             ('block2', nn.Sequential(OrderedDict(
-                [('unit1', PreActBottleneck(cin=width*4, cout=width*8, cmid=width*2, stride=2))] +
-                [(f'unit{i:d}', PreActBottleneck(cin=width*8, cout=width*8, cmid=width*2)) for i in range(2, block_units[1] + 1)],
+                [('unit1', PreActBottleneck(cin=width*4, cout=width*8, cmid=width*2, stride=2, dims=config.dims))] +
+                [(f'unit{i:d}', PreActBottleneck(cin=width*8, cout=width*8, cmid=width*2, dims=config.dims))
+                    for i in range(2, config.resnet.num_layers[1] + 1)],
                 ))),
             ('block3', nn.Sequential(OrderedDict(
-                [('unit1', PreActBottleneck(cin=width*8, cout=width*16, cmid=width*4, stride=2))] +
-                [(f'unit{i:d}', PreActBottleneck(cin=width*16, cout=width*16, cmid=width*4)) for i in range(2, block_units[2] + 1)],
+                [('unit1', PreActBottleneck(cin=width*8, cout=width*16, cmid=width*4, stride=2, dims=config.dims))] +
+                [(f'unit{i:d}', PreActBottleneck(cin=width*16, cout=width*16, cmid=width*4, dims=config.dims))
+                    for i in range(2, config.resnet.num_layers[2] + 1)],
                 ))),
         ]))
 
+        down_sizes = [torch.tensor(config.img_size)]
+        down_sizes.append(1 + (down_sizes[-1] - 1) // 2)
+        down_sizes.append(1 + (down_sizes[-1] - 3) // 2)
+        for i in range(len(self.body)-2):
+            down_sizes.append(1 + (down_sizes[-1] - 1) // 2)
+        up_sizes = [down_sizes[-1]]
+        for i in range(len(self.body)):
+            up_sizes.append(up_sizes[-1] * 2)
+        mode = 'bilinear' if config.dims == 2 else 'trilinear'
+        self.up_sample = [nn.Identity() if torch.all(down_sizes[i-3] == up_sizes[2-i]) else
+                          nn.Upsample(tuple(up_sizes[2-i]), mode=mode, align_corners=True)
+                          for i in range(len(self.body))]
+
     def forward(self, x):
         features = []
-        b, c, in_size, _ = x.size()
         x = self.root(x)
-        features.append(x)
-        x = nn.MaxPool2d(kernel_size=3, stride=2, padding=0)(x)
+        features.append(self.up_sample[0](x))
+        x = self.pool(x)
         for i in range(len(self.body)-1):
             x = self.body[i](x)
-            right_size = int(in_size / 4 / (i+1))
-            # TODO Investigate whats going on with these paddings
-            if x.size()[2] != right_size:
-                pad = right_size - x.size()[2]
-                assert pad < 3 and pad > 0, "x {} should {}".format(x.size(), right_size)
-                feat = torch.zeros((b, x.size()[1], right_size, right_size), device=x.device)
-                feat[:, :, 0:x.size()[2], 0:x.size()[3]] = x[:]
-            else:
-                feat = x
-            features.append(feat)
+            # up samples are added so the features shape matches that of the up sampling side
+            features.append(self.up_sample[i+1](x))
         x = self.body[-1](x)
+
         return x, features[::-1]

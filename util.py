@@ -4,19 +4,19 @@ import numpy as np
 import imageio
 
 
-def one_hot(label, num_classes):
+def one_hot(label):
     """
     Takes a label formatted where each class is a different consecutive integer. Converts this into a
     one hot encoded label. If input has dimensions of (x1, x2, ..., xn) then output will have dimension
-    (x1, x2, ..., xn, num_classes)
+    (num_classes, x1, x2, ..., xn)
     :param label: label to be converted to one hot encoding
-    :param num_classes: number of classes in the label
     :return:
     """
+    num_classes = int(np.max(label) + 1)
     dims = [num_classes] + list(label.shape)
-    one_hot_encoding = torch.zeros(dims)
+    one_hot_encoding = np.uint8(np.zeros(dims))
     for i in range(num_classes):
-        one_hot_encoding[i, label == i] = 1
+        one_hot_encoding[i, label == i] = True
     return one_hot_encoding
 
 

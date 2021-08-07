@@ -5,9 +5,90 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as f
 import numpy as np
-from torch.nn import Dropout, Softmax, Linear, Conv2d, LayerNorm
-
+from torch.nn import Dropout, Softmax, Linear, Conv2d, Conv3d, LayerNorm
+import ml_collections
 from resnetV2 import ResNetV2
+from functools import reduce
+
+
+def get_b16_config():
+    """Returns the ViT-B/16 configuration."""
+    config = ml_collections.ConfigDict()
+    config.patches = ml_collections.ConfigDict({'size': [16, 16]})
+    config.hidden_size = 768
+    config.transformer = ml_collections.ConfigDict()
+    config.transformer.mlp_dim = 3072
+    config.transformer.num_heads = 12
+    config.transformer.num_layers = 12
+    config.transformer.attention_dropout_rate = 0.0
+    config.transformer.dropout_rate = 0.1
+
+    config.classifier = 'seg'
+    config.representation_size = None
+    config.resnet_pretrained_path = None
+    config.pretrained_path = '../model/vit_checkpoint/imagenet21k/ViT-B_16.npz'
+    config.patch_size = 16
+
+    config.decoder_channels = (256, 128, 64, 16)
+    config.n_classes = 2
+    config.activation = 'softmax'
+    return config
+
+
+def get_testing():
+    """Returns a minimal configuration for testing."""
+    config = ml_collections.ConfigDict()
+    config.patches = ml_collections.ConfigDict({'size': [16, 16]})
+    config.hidden_size = 1
+    config.transformer = ml_collections.ConfigDict()
+    config.transformer.mlp_dim = 1
+    config.transformer.num_heads = 1
+    config.transformer.num_layers = 1
+    config.transformer.attention_dropout_rate = 0.0
+    config.transformer.dropout_rate = 0.1
+    config.classifier = 'token'
+    config.representation_size = None
+    return config
+
+
+def get_r50_b16_config(dims=2, img_size=224):
+    """Returns the Resnet50 + ViT-B/16 configuration."""
+    config = get_b16_config()
+    config.patches.grid = [16] * dims
+    config.resnet = ml_collections.ConfigDict()
+    config.resnet.num_layers = (3, 4, 9)
+    config.resnet.width_factor = 1
+    config.dims = dims
+    config.img_size = img_size
+
+    config.classifier = 'seg'
+    config.pretrained_path = '../model/vit_checkpoint/imagenet21k/R50+ViT-B_16.npz'
+    config.decoder_channels = (256, 128, 64, 16)
+    config.skip_channels = [512, 256, 64, 16]
+    config.n_classes = 2
+    config.n_skip = 3
+    config.activation = 'softmax'
+
+    return config
+
+
+def get_embeddings_shape(config):
+    """
+    Returns the shape of the embeddings before they are flattened, and the shape of each patch
+    """
+    if config.patches.get("grid") is not None:  # ResNet
+        grid_size = config.patches["grid"]
+        resnet_out_size = torch.tensor(config.img_size)
+        for i in range(4):
+            resnet_out_size = (resnet_out_size+1) // 2
+        patch_size = [max(1, resnet_out_size[i] // grid_size[i]) for i in range(config.dims)]
+        grid_size_real = [resnet_out_size[i] // patch_size[i] for i in range(config.dims)]
+        return grid_size_real, patch_size
+    else:
+        patch_size = config.patches["size"]
+        if type(patch_size) != list:
+            patch_size = [patch_size] * config.dims
+        return [config.img_size[i] // patch_size[i] for i in range(config.dims)], patch_size
 
 
 class MLP(nn.Module):
@@ -112,30 +193,22 @@ class Embeddings(nn.Module):
     their is some positional information within the embeddings
     """
 
-    def __init__(self, config, img_size, in_channels=3):
+    def __init__(self, config, in_channels=3):
         super(Embeddings, self).__init__()
         self.hybrid = None
         self.config = config
-        if config.patches.get("grid") is not None:  # ResNet
-            grid_size = config.patches["grid"]
-            patch_size = (img_size[0] // 16 // grid_size[0], img_size[1] // 16 // grid_size[1])
-            patch_size_real = (patch_size[0] * 16, patch_size[1] * 16)
-            n_patches = (img_size[0] // patch_size_real[0]) * (img_size[1] // patch_size_real[1])
-            self.hybrid = True
-        else:
-            patch_size = config.patches["size"]
-            if type(patch_size) != tuple:
-                patch_size = (patch_size, patch_size)
-            n_patches = (img_size[0] // patch_size[0]) * (img_size[1] // patch_size[1])
-            self.hybrid = False
+        self.hybrid = config.patches.get("grid") is not None
+        embeddings_shape, patch_size = get_embeddings_shape(config)
+        n_patches = reduce(lambda a, b: a * b, embeddings_shape)
 
         if self.hybrid:
-            self.hybrid_model = ResNetV2(block_units=config.resnet.num_layers, width_factor=config.resnet.width_factor)
+            self.hybrid_model = ResNetV2(config)
             in_channels = self.hybrid_model.width * 16
-        self.patch_embeddings = Conv2d(in_channels=in_channels,
-                                       out_channels=config.hidden_size,
-                                       kernel_size=patch_size,
-                                       stride=patch_size)
+        conv = Conv2d if config.dims == 2 else Conv3d
+        self.patch_embeddings = conv(in_channels=in_channels,
+                                     out_channels=config.hidden_size,
+                                     kernel_size=patch_size,
+                                     stride=patch_size)
         self.position_embeddings = nn.Parameter(torch.zeros(1, n_patches, config.hidden_size))
 
         self.dropout = Dropout(config.transformer["dropout_rate"])
@@ -191,6 +264,7 @@ class Encoder(nn.Module):
     vector, so I'm not sure how it is an encoder. (Experimentally verified, this module does not change the
     dimensionality of the input)
     """
+
     def __init__(self, config):
         super(Encoder, self).__init__()
         self.layer = nn.ModuleList()
@@ -219,9 +293,9 @@ class Transformer(nn.Module):
     resolution spatial information to the decoder
     """
 
-    def __init__(self, config, img_size):
+    def __init__(self, config):
         super(Transformer, self).__init__()
-        self.embeddings = Embeddings(config, img_size=img_size)
+        self.embeddings = Embeddings(config)
         self.encoder = Encoder(config)
 
     def forward(self, input_ids):
@@ -230,15 +304,19 @@ class Transformer(nn.Module):
         return encoded, features
 
 
-class Conv2dReLU(nn.Sequential):
+class ConvReLU(nn.Sequential):
     """
     Simply a convolutional layer, followed by a batch norm, followed by a ReLU
     """
-    def __init__(self, in_channels, out_channels, kernel_size, padding=0, stride=1, batch_norm=True):
-        conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=not batch_norm)
+
+    def __init__(self, in_channels, out_channels, kernel_size, padding=0, stride=1, dims=2,
+                 batch_norm=True):
+        conv_type = Conv2d if dims == 2 else Conv3d
+        conv = conv_type(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=not batch_norm)
         relu = nn.ReLU(inplace=True)
-        bn = nn.BatchNorm2d(out_channels)
-        super(Conv2dReLU, self).__init__(conv, bn, relu)
+        norm_type = nn.BatchNorm2d if dims == 2 else nn.BatchNorm3d
+        bn = norm_type(out_channels)
+        super(ConvReLU, self).__init__(conv, bn, relu)
 
 
 class DecoderBlock(nn.Module):
@@ -251,12 +329,14 @@ class DecoderBlock(nn.Module):
     convolutions. Thus, it must have dimension (B, S, 2H, 2W) where S is the skip channels and is a parameter to the
     block. By defualt there are zero skip channels (no skip connection).
     """
-    def __init__(self, in_channels, out_channels, skip_channels=0, batch_norm=True):
+
+    def __init__(self, in_channels, out_channels, dims=2, skip_channels=0, batch_norm=True):
         super().__init__()
-        self.conv1 = Conv2dReLU(in_channels + skip_channels, out_channels,
-                                kernel_size=3, padding=1, batch_norm=batch_norm)
-        self.conv2 = Conv2dReLU(out_channels, out_channels, kernel_size=3, padding=1, batch_norm=batch_norm)
-        self.up = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.conv1 = ConvReLU(in_channels + skip_channels, out_channels,
+                              dims=dims, kernel_size=3, padding=1, batch_norm=batch_norm)
+        self.conv2 = ConvReLU(out_channels, out_channels, dims=dims, kernel_size=3, padding=1,
+                              batch_norm=batch_norm)
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear' if dims == 2 else 'trilinear', align_corners=True)
 
     def forward(self, x, skip=None):
         x = self.up(x)
@@ -275,10 +355,18 @@ class SegmentationHead(nn.Sequential):
     either an up sample or an identity. If a patch size of 16 is used with a square image that is a multiple of 16,
     then the output of the decoder will match the input, so up sampling will not be required.
     """
-    def __init__(self, in_channels, out_channels, kernel_size=3, up_sampling=1):
-        conv2d = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
-        upsampling = nn.UpsamplingBilinear2d(scale_factor=up_sampling) if up_sampling > 1 else nn.Identity()
-        super().__init__(conv2d, upsampling)
+
+    def __init__(self, config, kernel_size=3, up_sampling=1):
+        conv_type = Conv2d if config.dims == 2 else Conv3d
+        conv = conv_type(config['decoder_channels'][-1], config['n_classes'],
+                         kernel_size=kernel_size, padding=kernel_size // 2)
+        out_size, _ = get_embeddings_shape(config)
+        out_size *= 16
+        up_sampling = nn.Upsample(
+            size=config.img_size,
+            mode='bilinear' if config.dims == 2 else 'trilinear',
+            align_corners=True) if not np.all(out_size == config.img_size) else nn.Identity()
+        super().__init__(conv, up_sampling)
 
 
 class DecoderCup(nn.Module):
@@ -287,7 +375,7 @@ class DecoderCup(nn.Module):
     number of batches, N is the number of patches and D is the hidden size. First the input is reshaped into traditional
     image dimensions: (B, D, H, W) where H = W = sqrt(N). This un-flattens the patches that were flattened during the
     embedding stage. We then have one 3x3 convolution to convert this to 512 channels (referred to the head channels).
-    Finally, this is passed through 4 decoder blocks, each of which doubles the image size, resulting in an inage of
+    Finally, this is passed through 4 decoder blocks, each of which doubles the image size, resulting in an image of
     size (16H, 16W). This is why a patch size of 16 is convenient, as the output of this will have the same size as the
     input (assuming the image is a square with sides that are multiples of 16). However, if the output of this doesn't
     match the input size, we can upscale it (or downscale it) using the segmentation head. The channels between each
@@ -295,11 +383,14 @@ class DecoderCup(nn.Module):
     the config. The code allows for four skip connections, however I'm not sure why as there are only 3 features, and
     4 is never actually used.
     """
+
     def __init__(self, config):
         super().__init__()
         self.config = config
         head_channels = 512
-        self.conv_more = Conv2dReLU(config.hidden_size, head_channels, kernel_size=3, padding=1, batch_norm=True)
+
+        self.conv_more = ConvReLU(config.hidden_size, head_channels, dims=config.dims, kernel_size=3, padding=1,
+                                  batch_norm=True)
         decoder_channels = config.decoder_channels
         in_channels = [head_channels] + list(decoder_channels[:-1])
         out_channels = decoder_channels
@@ -308,17 +399,26 @@ class DecoderCup(nn.Module):
         # isn't used. This is needed because the decoder block needs to know how many skip channels it gets so that
         # it can initialise its convolutional layers
         skip_channels = [0, 0, 0, 0] if self.config.n_skip == 0 else self.config.skip_channels
-        for i in range(4-self.config.n_skip):
-            skip_channels[3-i] = 0
+        for i in range(4 - self.config.n_skip):
+            skip_channels[3 - i] = 0
 
-        blocks = [DecoderBlock(in_channels[i], out_channels[i], skip_channels[i]) for i in range(4)]
+        blocks = [DecoderBlock(in_channels[i], out_channels[i],
+                               dims=config.dims, skip_channels=skip_channels[i]) for i in range(4)]
         self.blocks = nn.ModuleList(blocks)
+
+        self.embeddings_shape, _ = get_embeddings_shape(config)
 
     def forward(self, hidden_states, features=None):
         batches, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)
-        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
         x = hidden_states.permute(0, 2, 1)
-        x = x.contiguous().view(batches, hidden, h, w)
+
+        if self.config.dims == 2:
+            h, w = self.embeddings_shape
+            x = x.contiguous().view(batches, hidden, h, w)
+        else:
+            h, w, d = self.embeddings_shape
+            x = x.contiguous().view(batches, hidden, h, w, d)
+
         x = self.conv_more(x)
         for i, decoder_block in enumerate(self.blocks):
             if features is not None:
@@ -338,26 +438,26 @@ class VisionTransformer(nn.Module):
     segmentation head which contains one final convolution to convert the the desired output channels, and an up sample
     is required to get the the same size as the input.
     """
-    def __init__(self, config, img_size=224):
-        super(VisionTransformer, self).__init__()
-        # Image size must be a tuple
-        if type(img_size) != tuple:
-            img_size = (img_size, img_size)
 
-        self.transformer = Transformer(config, img_size)
+    def __init__(self, config):
+        super(VisionTransformer, self).__init__()
+        # Image size must be a list
+        if type(config.img_size) != list:
+            config.img_size = [config.img_size] * config.dims
+
+        self.config = config
+        self.transformer = Transformer(config)
         self.decoder = DecoderCup(config)
-        self.segmentation_head = SegmentationHead(
-            in_channels=config['decoder_channels'][-1],
-            out_channels=config['n_classes'],
-            kernel_size=3,
-        )
+        self.segmentation_head = SegmentationHead(config, kernel_size=3)
 
     def forward(self, x):
         # If the image is grayscale (with one channel), repeat it 3 times to create 3 channels
         if x.size()[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
+            if self.config.dims == 2:
+                x = x.repeat(1, 3, 1, 1)
+            else:
+                x = x.repeat(1, 3, 1, 1, 1)
         x, features = self.transformer(x)  # (B, n_patch, hidden)
         x = self.decoder(x, features)
-        # TODO Fix segmentation head so it automatically chooses the scale to match the input size
         out = self.segmentation_head(x)
         return out
