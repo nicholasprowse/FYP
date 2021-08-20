@@ -6,6 +6,7 @@ import numpy as np
 import nibabel as nib
 import util
 import skimage.transform
+import torch
 
 
 def crop(data, label=None):
@@ -36,34 +37,41 @@ def crop(data, label=None):
     return data, label
 
 
-def prepare_dataset(path, dataset):
+def prepare_dataset(path, name):
     """
     Crops all images in the given dataset to the non-zero region, then saves all of the dataset into a single
-    .npz file. Data set must be organised as follows. All files in one folder, training data has name trImg#.nii.gz
-    where # is a decimal number, training labels have name trLbl#.nii.gz, with corresponding number to its image.
-    Test image has name tsImg#.nii.gz
+    .npz file. Data set must be organised as follows. All files in one folder, training data has name trImg_#.nii.gz
+    where # is a decimal number, training labels have name trLbl_#.nii.gz, with corresponding number to its image.
+    Test image has name tsImg_#.nii.gz
     :param path:
-    :param dataset:
+    :param name:
     :return:
     """
+    config = first_pass(path, name)
+    second_pass(config)
+
+
+def first_pass(path, name):
+    """
+    In the first pass of the data preparation process, the images are cropped to the non zero region, sizes and image
+    spacings are determined and the number of classes is determined
+    """
     config = ml_collections.ConfigDict()
-    dataset_path = join(path, dataset)
-    cropped_path = join(path, f'{dataset}_processed')
+    dataset_path = join(path, name)
+    processed_path = join(path, f'{name}_processed')
 
-    config.path = cropped_path
+    config.path = processed_path
 
-    if not os.path.exists(cropped_path):
-        os.mkdir(cropped_path)
+    if not os.path.exists(processed_path):
+        os.mkdir(processed_path)
 
-    dataset_json = json.load(open(join(dataset_path, 'dataset.json')))
-    shapes = np.zeros((dataset_json['numTraining'], 3))
-    spacing = np.zeros((dataset_json['numTraining'], 3))
-    for i in range(dataset_json['numTraining']):
-        img_name = dataset_json['training'][i]['image']
-        lbl_name = dataset_json['training'][i]['label']
-
-        nib_data = nib.load(join(dataset_path, img_name))
-        nib_label = nib.load(join(dataset_path, lbl_name))
+    dataset_json = json.load(open(join(dataset_path, 'data.json')))
+    shapes = np.zeros((dataset_json['num_train'], 3))
+    spacing = np.zeros((dataset_json['num_train'], 3))
+    classes = np.array([])
+    for i in range(dataset_json['num_train']):
+        nib_data = nib.load(join(dataset_path, f'trImg_{i}.nii.gz'))
+        nib_label = nib.load(join(dataset_path, f'trLbl_{i}.nii.gz'))
         img = nib_data.get_fdata()
         lbl = nib_label.get_fdata()
 
@@ -76,13 +84,13 @@ def prepare_dataset(path, dataset):
         spacing[i, :] = np.array(nib_data.header.get_zooms()[0:3])
         img, lbl = crop(img, lbl)
 
-        lbl = util.one_hot(lbl)
+        classes = np.union1d(classes, lbl)
         shapes[i, :] = np.array(img.shape[1:4])
 
         # Compressed npz files are around twice as slow (to read) as npy files
-        # Test results: npy: 0.213s, npz: 0.311s, compressed npz: 0.727z
-        data_path = join(cropped_path, f'train_{i}.npz')
-        if not os.path.exists(data_path):      # To save time, only save the data if not already there
+        # Test results: npy: 0.213s, npz: 0.311s, compressed npz: 0.727s
+        data_path = join(processed_path, f'train_{i}.npz')
+        if not os.path.exists(data_path):  # To save time, only save the data if not already there
             np.savez_compressed(data_path, data=img, label=lbl)
 
     config.train_spacings = spacing
@@ -91,20 +99,16 @@ def prepare_dataset(path, dataset):
     config.isotropy = np.max(config.median_spacing) / np.min(config.median_spacing)
     config.anisotropic_axis = np.argmax(config.median_spacing)
     config.tenth_percentile_spacing = np.percentile(spacing[config.anisotropic_axis, :], 10)
+    # config.dims
+    config.classes = list(classes)
+    # config.ct
 
     config.target_spacing = config.median_spacing
     if config.isotropy >= 3:
         config.target_spacing[config.anisotropic_axis] = config.tenth_percentile_spacing
 
-    print(config.median_spacing)
-    print(config.median_shape)
-    print(config.isotropy)
-    print(config.anisotropic_axis)
-    print(config.tenth_percentile_spacing)
-    print(config.target_spacing)
-
-    for i in range(dataset_json['numTest']):
-        img = nib.load(join(dataset_path, dataset_json['test'][i])).get_fdata()
+    for i in range(dataset_json['num_test']):
+        img = nib.load(join(dataset_path, f'tsImg_{i}.nii.gz')).get_fdata()
         # Make sure data is 4 dimensional, with channels as first dimension
         if img.ndim == 3:
             np.expand_dims(img, 0)
@@ -112,34 +116,88 @@ def prepare_dataset(path, dataset):
             np.swapaxes(img, 0, 3)
 
         img, _ = crop(img, None)
-        data_path = join(cropped_path, f'test_{i}.npz')
+        data_path = join(processed_path, f'test_{i}.npz')
         if not os.path.exists(data_path):
-            np.savez_compressed(data_path, img)
+            np.savez_compressed(data_path, data=img)
 
     return config
 
 
-def resize(data, label, spacing, config):
+def second_pass(config):
+    """
+    In the second pass of the data preparation process, we convert the labels into a one hot encoding, resample
+    the images to have a consistent pixel spacing and normalise the intensity of the images
+    """
+    dataset_json = json.load(open(join(config.path, 'data.json')))
+    for i in range(dataset_json['num_train']):
+        data_path = join(config.path, f'train_{i}.npz')
+        with np.load(data_path) as data:
+            img = data['data']
+            lbl = data['label']
+
+            img = normalise(img, config)
+            img, lbl = resize(img, config.spacing[i, :], config, label=lbl)
+            lbl = util.one_hot(lbl, classes=config.classes)
+            np.savez_compressed(data_path, data=img, label=lbl)
+
+    for i in range(dataset_json['num_test']):
+        data_path = join(config.path, f'test_{i}.npz')
+        with np.load(data_path) as data:
+            img = data['data']
+
+            img = normalise(img, config)
+            img, _ = resize(img, config.spacing[i, :], config)
+            np.savez_compressed(data_path, data=img)
+
+
+def resize(data, spacing, config, label=None):
     new_size = data.shape * spacing / config.target_spacing
     if np.all(new_size == data.shape):
         return data, label
 
     new_data = np.zeros([data.shape[0]] + new_size)
-    new_label = np.uint8(np.zeros([label.shape[0]] + new_size))
+    new_label = None
+    if label is not None:
+        new_label = np.uint8(np.zeros([label.shape[0]] + new_size))
     if config.isotropy >= 3:
         # z-axis is nearest neighbor
         for c in range(len(data.shape[0])):
             # Resize with order 3 along just the first 2 dimensions
             first_size = np.array([new_size[0], new_size[1], data.shape[2]])
             first_data = skimage.transform.resize(data[c], first_size, order=3)
-            scaled_label = skimage.transform.resize(np.float(new_label[c]), first_size, order=3)
-            # Resize with nearest neighbor along 3rd dimension
-            scaled_label = skimage.transform.resize(scaled_label, new_size, order=0)
-            new_label[c] = np.uint8(np.around(scaled_label))
             new_data[c] = skimage.transform.resize(first_data, new_size, order=0)
-        pass
+
+            if label is not None:
+                scaled_label = skimage.transform.resize(np.float(new_label[c]), first_size, order=3)
+                # Resize with nearest neighbor along 3rd dimension
+                scaled_label = skimage.transform.resize(scaled_label, new_size, order=0)
+                new_label[c] = np.uint8(np.around(scaled_label))
+
     else:
         for c in range(len(data.shape[0])):
             new_data[c] = skimage.transform.resize(data[c], new_size, order=3)
-            scaled_label = skimage.transform.resize(np.float(new_label[c]), new_size, order=3)
-            new_label[c] = np.uint8(np.around(scaled_label))
+            if label is not None:
+                scaled_label = skimage.transform.resize(np.float(new_label[c]), new_size, order=3)
+                new_label[c] = np.uint8(np.around(scaled_label))
+
+    return new_data, new_label
+
+
+def normalise(data, config):
+    """
+    Channels that are of the CT modality type are clipped within the 0.5 and 99.5 percentiles and all channels are
+    normalised to unit stdev and zero mean
+    :param data: numpy array with channels as the first dimension
+    :param config: config dictionary, needed for the modalities of each channel
+    :return: normalised data
+    """
+    for i in range(len(data[0])):
+        if config.ct[i]:
+            percentile_99_5 = np.percentile(data[i], 99.5)
+            percentile_0_5 = np.percentile(data[i], 0.5)
+            data[i] = np.clip(data[i], percentile_0_5, percentile_99_5)
+        mean = np.mean(data[i])
+        std = np.std(data[i])
+        data[i] = (data[i] - mean) / std
+
+    return data

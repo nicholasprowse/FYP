@@ -4,7 +4,7 @@ import numpy as np
 import imageio
 
 
-def one_hot(label):
+def one_hot(label, classes=None):
     """
     Takes a label formatted where each class is a different consecutive integer. Converts this into a
     one hot encoded label. If input has dimensions of (x1, x2, ..., xn) then output will have dimension
@@ -12,11 +12,12 @@ def one_hot(label):
     :param label: label to be converted to one hot encoding
     :return:
     """
-    num_classes = int(np.max(label) + 1)
-    dims = [num_classes] + list(label.shape)
+    if classes is None:
+        classes = np.unique(label)
+    dims = [len(classes)] + list(label.shape)
     one_hot_encoding = np.uint8(np.zeros(dims))
-    for i in range(num_classes):
-        one_hot_encoding[i, label == i] = True
+    for c, i in enumerate(classes):
+        one_hot_encoding[i, label == c] = True
     return one_hot_encoding
 
 
