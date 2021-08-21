@@ -7,7 +7,7 @@ import os
 import util
 import numpy as np
 import ml_collections
-import dataset
+import dataset_preparation
 import skimage.transform
 import preprocessing
 from model import VisionTransformer, get_r50_b16_config
@@ -82,9 +82,10 @@ def main4():
 
 
 if __name__ == '__main__':
-    import dataset
-    dataset.prepare_decathlon_dataset('/Volumes/One Touch/orig_med_data', '/Volumes/One Touch/med_data',
-                                      'Task04_Hippocampus')
+    from preprocessing import prepare_dataset
+    from dataset_preparation import prepare_decathlon_dataset
+    # prepare_decathlon_dataset('/Volumes/One Touch/orig_med_data', '/Volumes/One Touch/med_data', 'Task04_Hippocampus')
+    prepare_dataset('/Volumes/One Touch/med_data', 'Task04_Hippocampus')
 
 
 def load_dataset_fingerprint(path):

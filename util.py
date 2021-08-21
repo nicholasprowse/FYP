@@ -10,13 +10,14 @@ def one_hot(label, classes=None):
     one hot encoded label. If input has dimensions of (x1, x2, ..., xn) then output will have dimension
     (num_classes, x1, x2, ..., xn)
     :param label: label to be converted to one hot encoding
+    :param classes: list of the values used to represent each class in the label
     :return:
     """
     if classes is None:
         classes = np.unique(label)
     dims = [len(classes)] + list(label.shape)
     one_hot_encoding = np.uint8(np.zeros(dims))
-    for c, i in enumerate(classes):
+    for i, c in enumerate(classes):
         one_hot_encoding[i, label == c] = True
     return one_hot_encoding
 

@@ -1,3 +1,5 @@
+import shutil
+
 import ml_collections
 from os.path import join
 import os
@@ -6,7 +8,6 @@ import numpy as np
 import nibabel as nib
 import util
 import skimage.transform
-import torch
 
 
 def crop(data, label=None):
@@ -27,13 +28,13 @@ def crop(data, label=None):
         # Swap given dimension to be first dimension, and slice out the nonzero region
         data = np.swapaxes(data, dim, 0)[min_idx:max_idx + 1]
         if label is not None:
-            label = np.swapaxes(label, dim, 0)[min_idx:max_idx + 1]
+            label = np.swapaxes(label, dim-1, 0)[min_idx:max_idx + 1]
 
     # All the swapped dimensions result in all dimensions still being in order, except the final dimension is
     # now the first dimension, so we move that back to the end
     data = np.moveaxis(data, 0, len(data.shape) - 1)
     if label is not None:
-        label = np.moveaxis(label, 0, len(data.shape) - 1)
+        label = np.moveaxis(label, 0, len(data.shape) - 2)
     return data, label
 
 
@@ -65,25 +66,24 @@ def first_pass(path, name):
     if not os.path.exists(processed_path):
         os.mkdir(processed_path)
 
+    shutil.copy(join(dataset_path, 'data.json'), join(processed_path, 'data.json'))
     dataset_json = json.load(open(join(dataset_path, 'data.json')))
     shapes = np.zeros((dataset_json['num_train'], 3))
-    spacing = np.zeros((dataset_json['num_train'], 3))
+    train_spacing = np.zeros((dataset_json['num_train'], 3))
     classes = np.array([])
     for i in range(dataset_json['num_train']):
         nib_data = nib.load(join(dataset_path, f'trImg_{i}.nii.gz'))
         nib_label = nib.load(join(dataset_path, f'trLbl_{i}.nii.gz'))
         img = nib_data.get_fdata()
         lbl = nib_label.get_fdata()
-
         # Make sure data is 4 dimensional, with channels as first dimension
         if img.ndim == 3:
-            np.expand_dims(img, 0)
+            img = np.expand_dims(img, 0)
         else:
-            np.moveaxis(img, 3, 0)
+            img = np.moveaxis(img, 3, 0)
 
-        spacing[i, :] = np.array(nib_data.header.get_zooms()[0:3])
+        train_spacing[i, :] = np.array(nib_data.header.get_zooms()[0:3])
         img, lbl = crop(img, lbl)
-
         classes = np.union1d(classes, lbl)
         shapes[i, :] = np.array(img.shape[1:4])
 
@@ -93,33 +93,37 @@ def first_pass(path, name):
         if not os.path.exists(data_path):  # To save time, only save the data if not already there
             np.savez_compressed(data_path, data=img, label=lbl)
 
-    config.train_spacings = spacing
-    config.median_spacing = np.median(spacing, axis=0)
+    config.train_spacings = train_spacing
+    config.median_spacing = np.median(train_spacing, axis=0)
     config.median_shape = np.median(shapes, axis=0)
     config.isotropy = np.max(config.median_spacing) / np.min(config.median_spacing)
     config.anisotropic_axis = np.argmax(config.median_spacing)
-    config.tenth_percentile_spacing = np.percentile(spacing[config.anisotropic_axis, :], 10)
+    config.tenth_percentile_spacing = np.percentile(train_spacing[config.anisotropic_axis, :], 10)
     # config.dims
     config.classes = list(classes)
-    # config.ct
+    config.ct = dataset_json['ct']
+    config.num_train = dataset_json['num_train']
 
     config.target_spacing = config.median_spacing
     if config.isotropy >= 3:
         config.target_spacing[config.anisotropic_axis] = config.tenth_percentile_spacing
-
+    test_spacing = np.zeros((dataset_json['num_test'], 3))
     for i in range(dataset_json['num_test']):
-        img = nib.load(join(dataset_path, f'tsImg_{i}.nii.gz')).get_fdata()
+        nib_img = nib.load(join(dataset_path, f'tsImg_{i}.nii.gz'))
+        img = nib_img.get_fdata()
         # Make sure data is 4 dimensional, with channels as first dimension
         if img.ndim == 3:
-            np.expand_dims(img, 0)
+            img = np.expand_dims(img, 0)
         else:
-            np.swapaxes(img, 0, 3)
+            img = np.swapaxes(img, 0, 3)
 
+        test_spacing[i, :] = np.array(nib_img.header.get_zooms()[0:3])
         img, _ = crop(img, None)
         data_path = join(processed_path, f'test_{i}.npz')
         if not os.path.exists(data_path):
             np.savez_compressed(data_path, data=img)
 
+    config.test_spacings = test_spacing
     return config
 
 
@@ -134,9 +138,8 @@ def second_pass(config):
         with np.load(data_path) as data:
             img = data['data']
             lbl = data['label']
-
             img = normalise(img, config)
-            img, lbl = resize(img, config.spacing[i, :], config, label=lbl)
+            img, lbl = resize(img, config.train_spacings[i, :], config, label=lbl)
             lbl = util.one_hot(lbl, classes=config.classes)
             np.savez_compressed(data_path, data=img, label=lbl)
 
@@ -146,13 +149,14 @@ def second_pass(config):
             img = data['data']
 
             img = normalise(img, config)
-            img, _ = resize(img, config.spacing[i, :], config)
+            img, _ = resize(img, config.test_spacings[i, :], config)
             np.savez_compressed(data_path, data=img)
 
 
 def resize(data, spacing, config, label=None):
-    new_size = data.shape * spacing / config.target_spacing
-    if np.all(new_size == data.shape):
+    new_size = data.shape[1:] * spacing / config.target_spacing
+
+    if np.all(new_size == data.shape[1:]):
         return data, label
 
     new_data = np.zeros([data.shape[0]] + new_size)
@@ -191,7 +195,7 @@ def normalise(data, config):
     :param config: config dictionary, needed for the modalities of each channel
     :return: normalised data
     """
-    for i in range(len(data[0])):
+    for i in range(data.shape[0]):
         if config.ct[i]:
             percentile_99_5 = np.percentile(data[i], 99.5)
             percentile_0_5 = np.percentile(data[i], 0.5)
