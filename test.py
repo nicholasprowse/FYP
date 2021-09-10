@@ -63,29 +63,20 @@ def main2():
 
 
 def main3():
-    import dicom2nifti
-    import dicom2nifti.settings as settings
-
-    settings.disable_validate_slice_increment()
-    settings.enable_resampling()
-    settings.set_resample_spline_interpolation_order(1)
-    settings.set_resample_padding(-1000)
-    dicom2nifti.convert_directory("/Volumes/One Touch/orig_med_data/CHAOS/Train_Sets/MR/1/T1DUAL/DICOM_anon/InPhase",
-                                  "/Volumes/One Touch")
+    import preprocessing
+    preprocessing.prepare_dataset('/Volumes/One Touch/med_data', 'Task04_Hippocampus', 4*1024**3)
 
 
 def main4():
-    result = dicom2nib("/Volumes/One Touch/orig_med_data/CHAOS/Train_Sets/MR/1/T1DUAL/DICOM_anon")
-    print(result.get_fdata().shape)
-    # img = nib.load("/Volumes/One Touch/801_.nii.gz").get_fdata()
-    # print(img.shape)
+    from dataset import Loader3D
+    loader = Loader3D('/Volumes/One Touch/med_data/Task04_Hippocampus_processed')
+    for i in range(24):
+        img, label = loader[i]
+        print(img.shape)
 
 
 if __name__ == '__main__':
-    from preprocessing import prepare_dataset
-    from dataset_preparation import prepare_decathlon_dataset
-    # prepare_decathlon_dataset('/Volumes/One Touch/orig_med_data', '/Volumes/One Touch/med_data', 'Task04_Hippocampus')
-    prepare_dataset('/Volumes/One Touch/med_data', 'Task04_Hippocampus')
+    main3()
 
 
 def load_dataset_fingerprint(path):

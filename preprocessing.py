@@ -1,13 +1,12 @@
-import shutil
-
-import ml_collections
 from os.path import join
 import os
 import json
+
 import numpy as np
 import nibabel as nib
 import util
 import skimage.transform
+from functools import reduce
 
 
 def crop(data, label=None):
@@ -28,7 +27,7 @@ def crop(data, label=None):
         # Swap given dimension to be first dimension, and slice out the nonzero region
         data = np.swapaxes(data, dim, 0)[min_idx:max_idx + 1]
         if label is not None:
-            label = np.swapaxes(label, dim-1, 0)[min_idx:max_idx + 1]
+            label = np.swapaxes(label, dim - 1, 0)[min_idx:max_idx + 1]
 
     # All the swapped dimensions result in all dimensions still being in order, except the final dimension is
     # now the first dimension, so we move that back to the end
@@ -38,7 +37,7 @@ def crop(data, label=None):
     return data, label
 
 
-def prepare_dataset(path, name):
+def prepare_dataset(path, name, memory_constraint):
     """
     Crops all images in the given dataset to the non-zero region, then saves all of the dataset into a single
     .npz file. Data set must be organised as follows. All files in one folder, training data has name trImg_#.nii.gz
@@ -46,10 +45,11 @@ def prepare_dataset(path, name):
     Test image has name tsImg_#.nii.gz
     :param path:
     :param name:
+    :param memory_constraint:
     :return:
     """
     config = first_pass(path, name)
-    second_pass(config)
+    second_pass(config, memory_constraint)
 
 
 def first_pass(path, name):
@@ -57,21 +57,19 @@ def first_pass(path, name):
     In the first pass of the data preparation process, the images are cropped to the non zero region, sizes and image
     spacings are determined and the number of classes is determined
     """
-    config = ml_collections.ConfigDict()
+
     dataset_path = join(path, name)
     processed_path = join(path, f'{name}_processed')
-
-    config.path = processed_path
+    config = json.load(open(join(dataset_path, 'data.json')))
+    config['path'] = processed_path
 
     if not os.path.exists(processed_path):
         os.mkdir(processed_path)
 
-    shutil.copy(join(dataset_path, 'data.json'), join(processed_path, 'data.json'))
-    dataset_json = json.load(open(join(dataset_path, 'data.json')))
-    shapes = np.zeros((dataset_json['num_train'], 3))
-    train_spacing = np.zeros((dataset_json['num_train'], 3))
+    shapes = np.zeros((config['num_train'], 3))
+    train_spacing = np.zeros((config['num_train'], 3))
     classes = np.array([])
-    for i in range(dataset_json['num_train']):
+    for i in range(config['num_train']):
         nib_data = nib.load(join(dataset_path, f'trImg_{i}.nii.gz'))
         nib_label = nib.load(join(dataset_path, f'trLbl_{i}.nii.gz'))
         img = nib_data.get_fdata()
@@ -90,25 +88,27 @@ def first_pass(path, name):
         # Compressed npz files are around twice as slow (to read) as npy files
         # Test results: npy: 0.213s, npz: 0.311s, compressed npz: 0.727s
         data_path = join(processed_path, f'train_{i}.npz')
-        if not os.path.exists(data_path):  # To save time, only save the data if not already there
-            np.savez_compressed(data_path, data=img, label=lbl)
+        np.savez_compressed(data_path, data=img, label=lbl)
 
-    config.train_spacings = train_spacing
-    config.median_spacing = np.median(train_spacing, axis=0)
-    config.median_shape = np.median(shapes, axis=0)
-    config.isotropy = np.max(config.median_spacing) / np.min(config.median_spacing)
-    config.anisotropic_axis = np.argmax(config.median_spacing)
-    config.tenth_percentile_spacing = np.percentile(train_spacing[config.anisotropic_axis, :], 10)
-    # config.dims
-    config.classes = list(classes)
-    config.ct = dataset_json['ct']
-    config.num_train = dataset_json['num_train']
+    config['train_spacings'] = train_spacing
+    config['median_spacing'] = np.median(train_spacing, axis=0)
+    config['median_shape'] = np.median(shapes, axis=0)
+    config['isotropy'] = np.max(config['median_spacing']) / np.min(config['median_spacing'])
+    # We artificially inflate the third axes spacing so that the anisotropic defaults to the third axis if all other
+    # # axes are equal
+    config['median_spacing'][2] *= 0.01
+    config['anisotropic_axis'] = np.argmax(config['median_spacing'])
+    config['median_spacing'][2] /= 0.01
 
-    config.target_spacing = config.median_spacing
-    if config.isotropy >= 3:
-        config.target_spacing[config.anisotropic_axis] = config.tenth_percentile_spacing
-    test_spacing = np.zeros((dataset_json['num_test'], 3))
-    for i in range(dataset_json['num_test']):
+    config['tenth_percentile_spacing'] = np.percentile(train_spacing[config['anisotropic_axis'], :], 10)
+    config['classes'] = list(classes)
+
+    config['target_spacing'] = config['median_spacing']
+    if config['isotropy'] >= 3:
+        config['target_spacing'][config['anisotropic_axis']] = config['tenth_percentile_spacing']
+
+    test_spacing = np.zeros((config['num_test'], 3))
+    for i in range(config['num_test']):
         nib_img = nib.load(join(dataset_path, f'tsImg_{i}.nii.gz'))
         img = nib_img.get_fdata()
         # Make sure data is 4 dimensional, with channels as first dimension
@@ -120,41 +120,90 @@ def first_pass(path, name):
         test_spacing[i, :] = np.array(nib_img.header.get_zooms()[0:3])
         img, _ = crop(img, None)
         data_path = join(processed_path, f'test_{i}.npz')
-        if not os.path.exists(data_path):
-            np.savez_compressed(data_path, data=img)
+        np.savez_compressed(data_path, data=img)
 
-    config.test_spacings = test_spacing
+    config['test_spacings'] = test_spacing
     return config
 
 
-def second_pass(config):
+def second_pass(config, memory_constraint):
     """
     In the second pass of the data preparation process, we convert the labels into a one hot encoding, resample
-    the images to have a consistent pixel spacing and normalise the intensity of the images
+    the images to have a consistent pixel spacing and normalise the intensity of the images. We also determine the patch
+    size based on maximum GPU memory allocation for the batch
     """
-    dataset_json = json.load(open(join(config.path, 'data.json')))
-    for i in range(dataset_json['num_train']):
-        data_path = join(config.path, f'train_{i}.npz')
+    config['total_layers'] = 0
+    config['total_voxels'] = 0
+    config['depths'] = [0]*config['num_train']
+    largest_shape = None
+    for i in range(config['num_train']):
+        data_path = join(config['path'], f'train_{i}.npz')
         with np.load(data_path) as data:
             img = data['data']
             lbl = data['label']
             img = normalise(img, config)
-            img, lbl = resize(img, config.train_spacings[i, :], config, label=lbl)
-            lbl = util.one_hot(lbl, classes=config.classes)
+            img, lbl = resize(img, config['train_spacings'][i, :], config, label=lbl)
+            # Move anisotropic axis to the third spatial axis
+            img = np.swapaxes(img, 3, config['anisotropic_axis'] + 1)
+            lbl = np.swapaxes(lbl, 2, config['anisotropic_axis'])
+            config['total_layers'] += img.shape[3]
+            config['depths'][i] = img.shape[3]
+            config['total_voxels'] += volume(img.shape)
+            # Find the shape of the image with the largest total number of voxels (for patch size calculation)
+            if largest_shape is None or volume(img.shape) > volume(largest_shape):
+                largest_shape = img.shape
+            lbl = util.one_hot(lbl, classes=config['classes'])
             np.savez_compressed(data_path, data=img, label=lbl)
 
-    for i in range(dataset_json['num_test']):
-        data_path = join(config.path, f'test_{i}.npz')
+    for i in range(config['num_test']):
+        data_path = join(config['path'], f'test_{i}.npz')
         with np.load(data_path) as data:
             img = data['data']
 
             img = normalise(img, config)
-            img, _ = resize(img, config.test_spacings[i, :], config)
+            img, _ = resize(img, config['test_spacings'][i, :], config)
             np.savez_compressed(data_path, data=img)
+
+    # Limits on the batch size
+    min_batch_size = 2
+    max_dataset_coverage_of_batch = 0.05
+    channels = largest_shape[0]
+    patch_grid_shape = np.array([1, 1, 1])
+    patch_size = np.ceil(largest_shape[1:4] / patch_grid_shape)
+    while min_batch_size * 4 * channels * volume(patch_size) >= memory_constraint:
+        largest_dim = np.argmax(patch_size)
+        patch_grid_shape[largest_dim] *= 2
+        patch_size = np.ceil(largest_shape[1:4] / patch_grid_shape)
+
+    config['patch_grid_shape'] = patch_grid_shape
+    config['batch_size'] = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
+    config['batch_size'] = min((max_dataset_coverage_of_batch * config['total_voxels'])
+                               / volume(config['median_shape'] / patch_grid_shape), config['batch_size'])
+    config['batch_size'] = int(config['batch_size'])
+
+    del config['train_spacings']
+    del config['test_spacings']
+    del config['anisotropic_axis']
+    # Convert numpy types to python types for JSON serialization
+    for key, value in config.items():
+        if type(value) == np.ndarray:
+            config[key] = value.tolist()
+        if type(value) == np.int64:
+            config[key] = int(value)
+        if type(value) == np.float64:
+            config[key] = float(value)
+
+    with open(join(config['path'], 'data.json'), 'w') as outfile:
+        json.dump(config, outfile)
+
+
+def volume(shape):
+    """returns the total number of voxels in an image"""
+    return reduce(lambda a, b: a * b, shape)
 
 
 def resize(data, spacing, config, label=None):
-    new_size = data.shape[1:] * spacing / config.target_spacing
+    new_size = data.shape[1:] * spacing / config['target_spacing']
 
     if np.all(new_size == data.shape[1:]):
         return data, label
@@ -163,7 +212,7 @@ def resize(data, spacing, config, label=None):
     new_label = None
     if label is not None:
         new_label = np.uint8(np.zeros([label.shape[0]] + new_size))
-    if config.isotropy >= 3:
+    if config['isotropy'] >= 3:
         # z-axis is nearest neighbor
         for c in range(len(data.shape[0])):
             # Resize with order 3 along just the first 2 dimensions
@@ -196,7 +245,7 @@ def normalise(data, config):
     :return: normalised data
     """
     for i in range(data.shape[0]):
-        if config.ct[i]:
+        if config['ct'][i]:
             percentile_99_5 = np.percentile(data[i], 99.5)
             percentile_0_5 = np.percentile(data[i], 0.5)
             data[i] = np.clip(data[i], percentile_0_5, percentile_99_5)
