@@ -97,7 +97,7 @@ def first_pass(path, name):
     # We artificially inflate the third axes spacing so that the anisotropic defaults to the third axis if all other
     # # axes are equal
     config['median_spacing'][2] *= 0.01
-    config['anisotropic_axis'] = np.argmax(config['median_spacing'])
+    config['anisotropic_axis'] = int(np.argmax(config['median_spacing']))
     config['median_spacing'][2] /= 0.01
 
     config['tenth_percentile_spacing'] = np.percentile(train_spacing[config['anisotropic_axis'], :], 10)
@@ -134,7 +134,7 @@ def second_pass(config, memory_constraint):
     """
     config['total_layers'] = 0
     config['total_voxels'] = 0
-    config['depths'] = [0]*config['num_train']
+    config['depths'] = [0] * config['num_train']
     largest_shape = None
     for i in range(config['num_train']):
         data_path = join(config['path'], f'train_{i}.npz')
@@ -146,6 +146,12 @@ def second_pass(config, memory_constraint):
             # Move anisotropic axis to the third spatial axis
             img = np.swapaxes(img, 3, config['anisotropic_axis'] + 1)
             lbl = np.swapaxes(lbl, 2, config['anisotropic_axis'])
+            # swap values in shape and spacings, so they are still correct
+            config['median_spacing'][2], config['median_spacing'][config['anisotropic_axis']] \
+                = config['median_spacing'][config['anisotropic_axis']], config['median_spacing'][2]
+            config['median_shape'][2], config['median_shape'][config['anisotropic_axis']] \
+                = config['median_shape'][config['anisotropic_axis']], config['median_shape'][2]
+
             config['total_layers'] += img.shape[3]
             config['depths'][i] = img.shape[3]
             config['total_voxels'] += volume(img.shape)
@@ -175,11 +181,20 @@ def second_pass(config, memory_constraint):
         patch_grid_shape[largest_dim] *= 2
         patch_size = np.ceil(largest_shape[1:4] / patch_grid_shape)
 
+    # determine the batch size for both 2D and 3D networks
     config['patch_grid_shape'] = patch_grid_shape
-    config['batch_size'] = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
-    config['batch_size'] = min((max_dataset_coverage_of_batch * config['total_voxels'])
-                               / volume(config['median_shape'] / patch_grid_shape), config['batch_size'])
-    config['batch_size'] = int(config['batch_size'])
+    config['batch_size3D'] = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
+    config['batch_size3D'] = min((max_dataset_coverage_of_batch * config['total_voxels'])
+                                 / volume(config['median_shape'] / patch_grid_shape), config['batch_size3D'])
+    config['batch_size3D'] = int(config['batch_size3D'])
+
+    max_slice_size = largest_shape[0] * largest_shape[1]
+    median_slice_size = config['median_shape'][0] * config['median_shape'][1]
+    config['batch_size2D'] = np.floor(memory_constraint / (4 * channels * max_slice_size))
+    config['batch_size2D'] = min((max_dataset_coverage_of_batch * config['total_voxels'])
+                                 / median_slice_size, config['batch_size2D'])
+    config['batch_size2D'] = int(config['batch_size2D'])
+    config['channels'] = channels
 
     del config['train_spacings']
     del config['test_spacings']

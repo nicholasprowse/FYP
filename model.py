@@ -9,6 +9,7 @@ from torch.nn import Dropout, Softmax, Linear, Conv2d, Conv3d, LayerNorm
 import ml_collections
 from resnetV2 import ResNetV2
 from functools import reduce
+from torch.nn.functional import interpolate
 
 
 def get_b16_config():
@@ -51,7 +52,7 @@ def get_testing():
     return config
 
 
-def get_r50_b16_config(dims=2, img_size=224):
+def get_r50_b16_config(dims=2, img_size=224, channels=1):
     """Returns the Resnet50 + ViT-B/16 configuration."""
     config = get_b16_config()
     config.patches.grid = [16] * dims
@@ -60,13 +61,13 @@ def get_r50_b16_config(dims=2, img_size=224):
     config.resnet.width_factor = 1
     config.dims = dims
     config.img_size = img_size
-
+    config.input_channels = channels
     config.classifier = 'seg'
     config.pretrained_path = '../model/vit_checkpoint/imagenet21k/R50+ViT-B_16.npz'
     config.decoder_channels = (256, 128, 64, 16)
-    config.skip_channels = [512, 256, 64, 16]
+    config.skip_channels = [512, 256, 64, channels]
     config.n_classes = 2
-    config.n_skip = 3
+    config.n_skip = 4
     config.activation = 'softmax'
 
     return config
@@ -204,6 +205,14 @@ class Embeddings(nn.Module):
         if self.hybrid:
             self.hybrid_model = ResNetV2(config)
             in_channels = self.hybrid_model.width * 16
+
+        resnet_out_size = torch.tensor(config.img_size)
+        for i in range(4):
+            resnet_out_size = (resnet_out_size + 1) // 2
+
+        self.up = nn.Upsample(size=resnet_out_size.tolist(), mode='bilinear' if config.dims == 2 else 'trilinear',
+                              align_corners=True)
+
         conv = Conv2d if config.dims == 2 else Conv3d
         self.patch_embeddings = conv(in_channels=in_channels,
                                      out_channels=config.hidden_size,
@@ -218,6 +227,7 @@ class Embeddings(nn.Module):
             x, features = self.hybrid_model(x)
         else:
             features = None
+        x = self.up(x)
         x = self.patch_embeddings(x)  # (B, hidden. n_patches^(1/2), n_patches^(1/2))
         x = x.flatten(2)
         x = x.transpose(-1, -2)  # (B, n_patches, hidden)
@@ -330,43 +340,22 @@ class DecoderBlock(nn.Module):
     block. By defualt there are zero skip channels (no skip connection).
     """
 
-    def __init__(self, in_channels, out_channels, dims=2, skip_channels=0, batch_norm=True):
+    def __init__(self, config, in_channels, out_channels, out_scale, skip_channels=0, batch_norm=True):
         super().__init__()
         self.conv1 = ConvReLU(in_channels + skip_channels, out_channels,
-                              dims=dims, kernel_size=3, padding=1, batch_norm=batch_norm)
-        self.conv2 = ConvReLU(out_channels, out_channels, dims=dims, kernel_size=3, padding=1,
+                              dims=config.dims, kernel_size=3, padding=1, batch_norm=batch_norm)
+        self.conv2 = ConvReLU(out_channels, out_channels, dims=config.dims, kernel_size=3, padding=1,
                               batch_norm=batch_norm)
-        self.up = nn.Upsample(scale_factor=2, mode='bilinear' if dims == 2 else 'trilinear', align_corners=True)
+        self.mode = 'bilinear' if config.dims == 2 else 'trilinear'
+        self.out_scale = out_scale
 
-    def forward(self, x, skip=None):
-        x = self.up(x)
-        if skip is not None:
-            x = torch.cat([x, skip], dim=1)
+    def forward(self, x, skip):
+        x = interpolate(x, size=skip.shape[2:], mode=self.mode, align_corners=True)
+        x = torch.cat([x, skip], dim=1)
+
         x = self.conv1(x)
         x = self.conv2(x)
         return x
-
-
-class SegmentationHead(nn.Sequential):
-    """
-    This module goes at the very end of the model and converts the output of the cascaded up sampler to the final
-    output. It allows the output to optionally be scaled by some amount, and also converts the channels to the correct
-    number of channels. This is done by a convolutional layer (raw convolution without bn or relu) followed by
-    either an up sample or an identity. If a patch size of 16 is used with a square image that is a multiple of 16,
-    then the output of the decoder will match the input, so up sampling will not be required.
-    """
-
-    def __init__(self, config, kernel_size=3, up_sampling=1):
-        conv_type = Conv2d if config.dims == 2 else Conv3d
-        conv = conv_type(config['decoder_channels'][-1], config['n_classes'],
-                         kernel_size=kernel_size, padding=kernel_size // 2)
-        out_size, _ = get_embeddings_shape(config)
-        out_size *= 16
-        up_sampling = nn.Upsample(
-            size=config.img_size,
-            mode='bilinear' if config.dims == 2 else 'trilinear',
-            align_corners=True) if not np.all(out_size == config.img_size) else nn.Identity()
-        super().__init__(conv, up_sampling)
 
 
 class DecoderCup(nn.Module):
@@ -402,8 +391,8 @@ class DecoderCup(nn.Module):
         for i in range(4 - self.config.n_skip):
             skip_channels[3 - i] = 0
 
-        blocks = [DecoderBlock(in_channels[i], out_channels[i],
-                               dims=config.dims, skip_channels=skip_channels[i]) for i in range(4)]
+        blocks = [DecoderBlock(config, in_channels[i], out_channels[i],
+                               2**(3-i), skip_channels=skip_channels[i]) for i in range(4)]
         self.blocks = nn.ModuleList(blocks)
 
         self.embeddings_shape, _ = get_embeddings_shape(config)
@@ -425,7 +414,7 @@ class DecoderCup(nn.Module):
                 skip = features[i] if (i < self.config.n_skip) else None
             else:
                 skip = None
-            x = decoder_block(x, skip=skip)
+            x = decoder_block(x, skip)
         return x
 
 
@@ -441,22 +430,18 @@ class VisionTransformer(nn.Module):
 
     def __init__(self, config):
         super(VisionTransformer, self).__init__()
-        # Image size must be a list
+        # Image size must be a list (image size is the median image size of the dataset)
         if type(config.img_size) != list:
             config.img_size = [config.img_size] * config.dims
 
         self.config = config
         self.transformer = Transformer(config)
         self.decoder = DecoderCup(config)
-        self.segmentation_head = SegmentationHead(config, kernel_size=3)
+        conv_type = Conv2d if config.dims == 2 else Conv3d
+        self.segmentation_head = conv_type(config['decoder_channels'][-1], config['n_classes'],
+                         kernel_size=3, padding=1)
 
     def forward(self, x):
-        # If the image is grayscale (with one channel), repeat it 3 times to create 3 channels
-        if x.size()[1] == 1:
-            if self.config.dims == 2:
-                x = x.repeat(1, 3, 1, 1)
-            else:
-                x = x.repeat(1, 3, 1, 1, 1)
         x, features = self.transformer(x)  # (B, n_patch, hidden)
         x = self.decoder(x, features)
         out = self.segmentation_head(x)

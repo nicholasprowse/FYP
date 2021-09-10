@@ -4,6 +4,8 @@ from matplotlib import pyplot as plt
 import json
 from os.path import join
 import os
+
+import model
 import util
 import numpy as np
 import ml_collections
@@ -68,15 +70,17 @@ def main3():
 
 
 def main4():
-    from dataset import Loader3D
-    loader = Loader3D('/Volumes/One Touch/med_data/Task04_Hippocampus_processed')
-    for i in range(24):
-        img, label = loader[i]
-        print(img.shape)
+    os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+    config = get_r50_b16_config(dims=3, img_size=[64, 64, 64])
+    config.skip_channels[-1] = 1
+    config.input_channels = 1
+    vt = VisionTransformer(config)
+    batch = torch.zeros([2, 1, 59, 67, 41])
+    print(vt(batch).shape)
 
 
 if __name__ == '__main__':
-    main3()
+    main4()
 
 
 def load_dataset_fingerprint(path):
