@@ -1,39 +1,30 @@
 import torch
-from os.path import join
-import json
 
-import model
-from dataset import Loader3D, Loader2D
-import torch.utils.data
-from torch.utils.data import DataLoader
 
-data_path = '/Volumes/One Touch/med_data/Task04_Hippocampus_processed'
-data_config = json.load(open(join(data_path, 'data.json')))
-device = torch.device(0)
+def train_epoch(model, data_loader, validation_data_loader, device, loss_fn, optimiser):
+    epoch_loss_train = 0.0
+    for i, (img, lbl) in enumerate(data_loader):
+        img, lbl = img.to(device), lbl.to(device)
+        out = model(img)
+        loss = loss_fn(out, lbl)
+        epoch_loss_train += loss.item()
+        optimiser.zero_grad()
+        loss.backward()
+        optimiser.step()
+        print(loss.item(), end=' ')
+    epoch_loss_train /= len(data_loader)
 
-transform = None
+    model.eval()
+    epoch_loss_validation = 0.0
+    with torch.no_grad():
+        for i, (img, lbl) in enumerate(validation_data_loader):
+            img, lbl = img.to(device), lbl.to(device)
+            out = model(img)
+            loss = loss_fn(out, lbl)
+            epoch_loss_validation += loss.item()
+            print(loss.item())
 
-dataset3D = Loader3D(data_path, transform)
-dataset2D = Loader2D(data_path, transform)
+    epoch_loss_validation /= len(validation_data_loader)
 
-train_validation_split = 0.9
-num_train = int(len(dataset3D) * train_validation_split)
-num_validation = len(dataset3D) - num_train
-train3D, validation3D = torch.utils.data.random_split(dataset3D, [num_train, num_validation])
-
-num_train = int(len(dataset2D) * train_validation_split)
-num_validation = len(dataset2D) - num_train
-train2D, validation2D = torch.utils.data.random_split(dataset2D, [num_train, num_validation])
-
-trainLoader3D = DataLoader(train3D, shuffle=True, batch_size=data_config['batch_size3D'])
-validLoader3D = DataLoader(validation3D, shuffle=True, batch_size=data_config['batch_size3D'])
-
-trainLoader2D = DataLoader(train3D, shuffle=True, batch_size=data_config['batch_size2D'])
-validLoader2D = DataLoader(validation3D, shuffle=True, batch_size=data_config['batch_size2D'])
-
-model_config2D = model.get_r50_b16_config(dims=2, img_size=data_config['median_shape'], channels=data_config['channels'])
-model_config3D = model.get_r50_b16_config(dims=3, img_size=data_config['median_shape'], channels=data_config['channels'])
-
-network2D = model.VisionTransformer(model_config2D)
-network3D = model.VisionTransformer(model_config3D)
+    return epoch_loss_train, epoch_loss_validation
 

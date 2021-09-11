@@ -200,7 +200,7 @@ class Embeddings(nn.Module):
         self.config = config
         self.hybrid = config.patches.get("grid") is not None
         embeddings_shape, patch_size = get_embeddings_shape(config)
-        n_patches = reduce(lambda a, b: a * b, embeddings_shape)
+        n_patches = int(reduce(lambda a, b: a * b, embeddings_shape))
 
         if self.hybrid:
             self.hybrid_model = ResNetV2(config)
