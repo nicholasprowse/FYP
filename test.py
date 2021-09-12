@@ -80,7 +80,9 @@ def main4():
 
 
 if __name__ == '__main__':
-    main4()
+    import preprocessing
+    preprocessing.prepare_dataset('/Users/nicholasprowse/Documents/Engineering/FYP/data',
+                                  'Task04_Hippocampus', 4 * 1024**3)
 
 
 def load_dataset_fingerprint(path):

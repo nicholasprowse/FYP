@@ -66,7 +66,7 @@ def first_pass(path, name):
     if not os.path.exists(processed_path):
         os.mkdir(processed_path)
 
-    shapes = np.zeros((config['num_train'], 3))
+    shapes = np.zeros((config['num_train'], 4))
     train_spacing = np.zeros((config['num_train'], 3))
     classes = np.array([])
     for i in range(config['num_train']):
@@ -83,7 +83,7 @@ def first_pass(path, name):
         train_spacing[i, :] = np.array(nib_data.header.get_zooms()[0:3])
         img, lbl = crop(img, lbl)
         classes = np.union1d(classes, lbl)
-        shapes[i, :] = np.array(img.shape[1:4])
+        shapes[i, :] = np.array(img.shape)
 
         # Compressed npz files are around twice as slow (to read) as npy files
         # Test results: npy: 0.213s, npz: 0.311s, compressed npz: 0.727s
@@ -92,14 +92,13 @@ def first_pass(path, name):
 
     config['train_spacings'] = train_spacing
     config['median_spacing'] = np.median(train_spacing, axis=0)
-    config['median_shape'] = np.median(shapes, axis=0)
+    config['shape'] = np.max(shapes, axis=0)
     config['isotropy'] = np.max(config['median_spacing']) / np.min(config['median_spacing'])
     # We artificially inflate the third axes spacing so that the anisotropic defaults to the third axis if all other
     # # axes are equal
-    config['median_spacing'][2] *= 0.01
+    config['median_spacing'][2] *= 1.01
     config['anisotropic_axis'] = int(np.argmax(config['median_spacing']))
-    config['median_spacing'][2] /= 0.01
-
+    config['median_spacing'][2] /= 1.01
     config['tenth_percentile_spacing'] = np.percentile(train_spacing[config['anisotropic_axis'], :], 10)
     config['classes'] = list(classes)
 
@@ -126,16 +125,19 @@ def first_pass(path, name):
     return config
 
 
+def volume(shape):
+    """returns the total number of voxels in an image"""
+    return reduce(lambda a, b: a * b, shape)
+
+
 def second_pass(config, memory_constraint):
     """
     In the second pass of the data preparation process, we convert the labels into a one hot encoding, resample
     the images to have a consistent pixel spacing and normalise the intensity of the images. We also determine the patch
     size based on maximum GPU memory allocation for the batch
     """
-    config['total_layers'] = 0
-    config['total_voxels'] = 0
     config['depths'] = [0] * config['num_train']
-    largest_shape = None
+    config['total_depth'] = 0
     for i in range(config['num_train']):
         data_path = join(config['path'], f'train_{i}.npz')
         with np.load(data_path) as data:
@@ -146,19 +148,10 @@ def second_pass(config, memory_constraint):
             # Move anisotropic axis to the third spatial axis
             img = np.swapaxes(img, 3, config['anisotropic_axis'] + 1)
             lbl = np.swapaxes(lbl, 2, config['anisotropic_axis'])
-            # swap values in shape and spacings, so they are still correct
-            config['median_spacing'][2], config['median_spacing'][config['anisotropic_axis']] \
-                = config['median_spacing'][config['anisotropic_axis']], config['median_spacing'][2]
-            config['median_shape'][2], config['median_shape'][config['anisotropic_axis']] \
-                = config['median_shape'][config['anisotropic_axis']], config['median_shape'][2]
 
-            config['total_layers'] += img.shape[3]
-            config['depths'][i] = img.shape[3]
-            config['total_voxels'] += volume(img.shape)
-            # Find the shape of the image with the largest total number of voxels (for patch size calculation)
-            if largest_shape is None or volume(img.shape) > volume(largest_shape):
-                largest_shape = img.shape
-            lbl = util.one_hot(lbl, classes=config['classes'])
+            config['depths'][i] = img.shape[-1]
+            config['total_depth'] += img.shape[-1]
+
             np.savez_compressed(data_path, data=img, label=lbl)
 
     for i in range(config['num_test']):
@@ -170,31 +163,33 @@ def second_pass(config, memory_constraint):
             img, _ = resize(img, config['test_spacings'][i, :], config)
             np.savez_compressed(data_path, data=img)
 
+    # swap values in shape and spacings, so they are still correct after the anisotropic axis has been changed
+    config['median_spacing'][2], config['median_spacing'][config['anisotropic_axis']] \
+        = config['median_spacing'][config['anisotropic_axis']], config['median_spacing'][2]
+    config['shape'][3], config['shape'][config['anisotropic_axis']+1] \
+        = config['shape'][config['anisotropic_axis']+1], config['shape'][3]
     # Limits on the batch size
     min_batch_size = 2
     max_dataset_coverage_of_batch = 0.05
-    channels = largest_shape[0]
+    max_voxels_in_batch = max_dataset_coverage_of_batch * config['num_train'] * volume(config['shape'])
+    channels = config['shape'][0]
     patch_grid_shape = np.array([1, 1, 1])
-    patch_size = np.ceil(largest_shape[1:4] / patch_grid_shape)
+    patch_size = np.ceil(config['shape'][1:4] / patch_grid_shape)
     while min_batch_size * 4 * channels * volume(patch_size) >= memory_constraint:
         largest_dim = np.argmax(patch_size)
         patch_grid_shape[largest_dim] *= 2
-        patch_size = np.ceil(largest_shape[1:4] / patch_grid_shape)
+        patch_size = np.ceil(config['shape'][1:4] / patch_grid_shape)
 
     # determine the batch size for both 2D and 3D networks
     config['patch_grid_shape'] = patch_grid_shape
-    config['batch_size3D'] = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
-    config['batch_size3D'] = min((max_dataset_coverage_of_batch * config['total_voxels'])
-                                 / volume(config['median_shape'] / patch_grid_shape), config['batch_size3D'])
-    config['batch_size3D'] = int(config['batch_size3D'])
+    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
+    batch_size_from_coverage = max_voxels_in_batch / (channels * volume(config['shape'][1:4] / patch_grid_shape))
+    config['batch_size3D'] = int(min(batch_size_from_memory, batch_size_from_coverage))
 
-    max_slice_size = largest_shape[0] * largest_shape[1]
-    median_slice_size = config['median_shape'][0] * config['median_shape'][1]
-    config['batch_size2D'] = np.floor(memory_constraint / (4 * channels * max_slice_size))
-    config['batch_size2D'] = min((max_dataset_coverage_of_batch * config['total_voxels'])
-                                 / median_slice_size, config['batch_size2D'])
-    config['batch_size2D'] = int(config['batch_size2D'])
-    config['channels'] = channels
+    slice_size = config['shape'][1] * config['shape'][2]
+    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * slice_size))
+    batch_size_from_coverage = max_voxels_in_batch / (channels * slice_size)
+    config['batch_size2D'] = int(min(batch_size_from_memory, batch_size_from_coverage))
 
     del config['train_spacings']
     del config['test_spacings']
@@ -210,11 +205,6 @@ def second_pass(config, memory_constraint):
 
     with open(join(config['path'], 'data.json'), 'w') as outfile:
         json.dump(config, outfile)
-
-
-def volume(shape):
-    """returns the total number of voxels in an image"""
-    return reduce(lambda a, b: a * b, shape)
 
 
 def resize(data, spacing, config, label=None):

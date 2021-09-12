@@ -4,7 +4,6 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as f
-import numpy as np
 from torch.nn import Dropout, Softmax, Linear, Conv2d, Conv3d, LayerNorm
 import ml_collections
 from resnetV2 import ResNetV2
@@ -52,7 +51,7 @@ def get_testing():
     return config
 
 
-def get_r50_b16_config(dims=2, img_size=224, channels=1):
+def get_r50_b16_config(dims=2, img_size=224, channels=1, num_classes=2):
     """Returns the Resnet50 + ViT-B/16 configuration."""
     config = get_b16_config()
     config.patches.grid = [16] * dims
@@ -66,7 +65,7 @@ def get_r50_b16_config(dims=2, img_size=224, channels=1):
     config.pretrained_path = '../model/vit_checkpoint/imagenet21k/R50+ViT-B_16.npz'
     config.decoder_channels = (256, 128, 64, 16)
     config.skip_channels = [512, 256, 64, channels]
-    config.n_classes = 2
+    config.n_classes = num_classes
     config.n_skip = 4
     config.activation = 'softmax'
 
@@ -78,18 +77,18 @@ def get_embeddings_shape(config):
     Returns the shape of the embeddings before they are flattened, and the shape of each patch
     """
     if config.patches.get("grid") is not None:  # ResNet
-        grid_size = config.patches["grid"]
+        grid_size = torch.tensor(config.patches["grid"])
         resnet_out_size = torch.tensor(config.img_size)
         for i in range(4):
-            resnet_out_size = (resnet_out_size+1) // 2
-        patch_size = [max(1, resnet_out_size[i] // grid_size[i]) for i in range(config.dims)]
-        grid_size_real = [resnet_out_size[i] // patch_size[i] for i in range(config.dims)]
-        return grid_size_real, patch_size
+            resnet_out_size = torch.div(resnet_out_size+1, 2, rounding_mode='floor')
+        patch_size = torch.clamp(torch.div(resnet_out_size, grid_size, rounding_mode='floor'), min=1)
+        grid_size_real = torch.div(resnet_out_size, patch_size, rounding_mode='floor')
+        return grid_size_real.int().tolist(), patch_size.int().tolist()
     else:
         patch_size = config.patches["size"]
         if type(patch_size) != list:
             patch_size = [patch_size] * config.dims
-        return [config.img_size[i] // patch_size[i] for i in range(config.dims)], patch_size
+        return torch.div(torch.tensor(config.img_size), torch.tensor(patch_size), rounding_mode='floor').int().tolist()
 
 
 class MLP(nn.Module):
@@ -200,18 +199,12 @@ class Embeddings(nn.Module):
         self.config = config
         self.hybrid = config.patches.get("grid") is not None
         embeddings_shape, patch_size = get_embeddings_shape(config)
+        patch_size = tuple(patch_size)
         n_patches = int(reduce(lambda a, b: a * b, embeddings_shape))
 
         if self.hybrid:
             self.hybrid_model = ResNetV2(config)
             in_channels = self.hybrid_model.width * 16
-
-        resnet_out_size = torch.tensor(config.img_size)
-        for i in range(4):
-            resnet_out_size = (resnet_out_size + 1) // 2
-
-        self.up = nn.Upsample(size=resnet_out_size.tolist(), mode='bilinear' if config.dims == 2 else 'trilinear',
-                              align_corners=True)
 
         conv = Conv2d if config.dims == 2 else Conv3d
         self.patch_embeddings = conv(in_channels=in_channels,
@@ -227,7 +220,6 @@ class Embeddings(nn.Module):
             x, features = self.hybrid_model(x)
         else:
             features = None
-        x = self.up(x)
         x = self.patch_embeddings(x)  # (B, hidden. n_patches^(1/2), n_patches^(1/2))
         x = x.flatten(2)
         x = x.transpose(-1, -2)  # (B, n_patches, hidden)
@@ -403,10 +395,10 @@ class DecoderCup(nn.Module):
 
         if self.config.dims == 2:
             h, w = self.embeddings_shape
-            x = x.contiguous().view(batches, hidden, h, w)
+            x = x.contiguous().view((batches, hidden, h, w))
         else:
             h, w, d = self.embeddings_shape
-            x = x.contiguous().view(batches, hidden, h, w, d)
+            x = x.contiguous().view((batches, hidden, h, w, d))
 
         x = self.conv_more(x)
         for i, decoder_block in enumerate(self.blocks):

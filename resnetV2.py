@@ -149,7 +149,7 @@ class ResNetV2(nn.Module):
             ('conv', conv(config.input_channels, width, kernel_size=7, stride=2, bias=False, padding=3)),
             ('gn', nn.GroupNorm(32, width, eps=1e-6)),
             ('relu', nn.ReLU(inplace=True)),
-        ]))
+        ])).float()
 
         pool = nn.MaxPool2d if config.dims == 2 else nn.MaxPool3d
         self.pool = pool(kernel_size=3, stride=2, padding=0)
@@ -195,7 +195,6 @@ class ResNetV2(nn.Module):
         x = self.pool(x)
         for i in range(len(self.body)-1):
             x = self.body[i](x)
-            # up samples are added so the features shape matches that of the up sampling side
             features.append(x)
         x = self.body[-1](x)
         return x, features[::-1]

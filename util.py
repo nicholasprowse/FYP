@@ -15,11 +15,12 @@ def one_hot(label, classes=None):
     :return:
     """
     if classes is None:
-        classes = np.unique(label)
-    dims = [len(classes)] + list(label.shape)
-    one_hot_encoding = np.uint8(np.zeros(dims))
+        classes = torch.unique(label)
+    dims = list(label.shape)
+    dims.insert(1, len(classes))
+    one_hot_encoding = torch.zeros(dims).int()
     for i, c in enumerate(classes):
-        one_hot_encoding[i, label == c] = 1
+        one_hot_encoding[:, i, :, :][label == c] = 1
     return one_hot_encoding
 
 
@@ -55,38 +56,41 @@ def img2gif(img, dim, file, label=None):
     imageio.mimsave(file, images)
 
 
+def _dice_loss(score, target):
+    target = target.float()
+    smooth = 1e-5
+    intersect = torch.sum(score * target)
+    y_sum = torch.sum(target * target)
+    z_sum = torch.sum(score * score)
+    loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
+    loss = 1 - loss
+    return loss
+
+
+def _one_hot_encoder(self, input_tensor):
+    tensor_list = []
+    for i in range(self.n_classes):
+        temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
+        tensor_list.append(temp_prob.unsqueeze(1))
+    output_tensor = torch.cat(tensor_list, dim=1)
+    return output_tensor.float()
+
+
 class DiceLoss(nn.Module):
-    def __init__(self, n_classes):
+    def __init__(self, classes):
         super(DiceLoss, self).__init__()
-        self.n_classes = n_classes
-
-    def _one_hot_encoder(self, input_tensor):
-        tensor_list = []
-        for i in range(self.n_classes):
-            temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
-            tensor_list.append(temp_prob.unsqueeze(1))
-        output_tensor = torch.cat(tensor_list, dim=1)
-        return output_tensor.float()
-
-    def _dice_loss(self, score, target):
-        target = target.float()
-        smooth = 1e-5
-        intersect = torch.sum(score * target)
-        y_sum = torch.sum(target * target)
-        z_sum = torch.sum(score * score)
-        loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
-        loss = 1 - loss
-        return loss
+        self.classes = classes
+        self.n_classes = len(classes)
 
     def forward(self, inputs, target, weight=None, softmax=False):
         if softmax:
             inputs = torch.softmax(inputs, dim=1)
-        target = self._one_hot_encoder(target)
+        target = one_hot(target, classes=self.classes)
         if weight is None:
             weight = [1] * self.n_classes
         assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(), target.size())
         loss = 0.0
         for i in range(0, self.n_classes):
-            dice = self._dice_loss(inputs[:, i], target[:, i])
+            dice = _dice_loss(inputs[:, i], target[:, i])
             loss += dice * weight[i]
         return loss / self.n_classes
