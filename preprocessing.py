@@ -181,6 +181,8 @@ def second_pass(config, memory_constraint):
         patch_size = np.ceil(config['shape'][1:4] / patch_grid_shape)
 
     # determine the batch size for both 2D and 3D networks
+    config['shape'][1:] = patch_size * patch_grid_shape
+    config['patch_size'] = patch_size
     config['patch_grid_shape'] = patch_grid_shape
     batch_size_from_memory = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
     batch_size_from_coverage = max_voxels_in_batch / (channels * volume(config['shape'][1:4] / patch_grid_shape))

@@ -3,6 +3,7 @@ from matplotlib import colors
 import numpy as np
 import imageio
 import torch.nn as nn
+from torch.nn.functional import pad
 
 
 def one_hot(label, classes=None):
@@ -49,6 +50,8 @@ def img2gif(img, dim, file, label=None):
             label_colours[:, :, :, 0] += i * label[i + 1] / num_labels
 
         label_colours = 255 * colors.hsv_to_rgb(label_colours)
+        # img[label[0] == 0] = label_colours[label[0] == 0]
+        img = np.zeros_like(img)
         img[label[0] == 0] = label_colours[label[0] == 0]
 
     img = np.moveaxis(img, dim, 0)
@@ -74,6 +77,13 @@ def _one_hot_encoder(self, input_tensor):
         tensor_list.append(temp_prob.unsqueeze(1))
     output_tensor = torch.cat(tensor_list, dim=1)
     return output_tensor.float()
+
+
+def center_crop(a, size):
+    """Pads/crops and image appropriately, so the original image is centered, and has the given size"""
+    padding_amount = tuple([int((size[i // 2] - a.shape[i // 2] + i % 2) // 2) for i in
+                            range(2*len(size)-1, -1, -1)])
+    return np.array(pad(torch.from_numpy(a), padding_amount))
 
 
 class DiceLoss(nn.Module):

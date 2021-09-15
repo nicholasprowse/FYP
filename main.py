@@ -5,17 +5,26 @@ from util import DiceLoss
 import model
 from dataset import Loader3D, Loader2D
 import torch.utils.data
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.nn.modules.loss import CrossEntropyLoss
 from trainer import train_epoch
 import time
+import transforms
+from torchvision.transforms import Compose
 
 data_path = '/Users/nicholasprowse/Documents/Engineering/FYP/data/Task04_Hippocampus_processed'
 n_epoch = 100
 data_config = json.load(open(join(data_path, 'data.json')))
 device = torch.device(0 if torch.cuda.is_available() else 'cpu')
 
-transform = None
+transform = Compose([
+        transforms.RandomRotateAndScale(data_config),
+        transforms.RandomFlip(),
+        transforms.RandomBrightnessAdjustment(),
+        transforms.RandomGaussianBlur(),
+        transforms.RandomGaussianNoise(),
+])
 
 dataset3D = Loader3D(data_path, transform)
 dataset2D = Loader2D(data_path, transform)
@@ -48,15 +57,26 @@ network3D = model.VisionTransformer(model_config3D).to(device)
 optimiser3D = optim.SGD(network3D.parameters(), lr=1, momentum=0.99, nesterov=True)
 optimiser2D = optim.SGD(network2D.parameters(), lr=1, momentum=0.99, nesterov=True)
 
+lr_scheduler3D = LambdaLR(optimiser3D, lambda ep: (1 - ep/n_epoch) ** 0.9, verbose=True)
+lr_scheduler2D = LambdaLR(optimiser2D, lambda ep: (1 - ep/n_epoch) ** 0.9, verbose=True)
+
 dice_loss = DiceLoss(data_config['classes'])
 ce_loss = CrossEntropyLoss()
-total_loss = lambda out, lbl: 0.5 * dice_loss(out, lbl) + 0.5 * ce_loss(out, lbl)
+
+
+def total_loss(out, target):
+    dice = dice_loss(out, target)
+    ce = ce_loss(out, target)
+    print(f'CE: {ce.item():.3f}, Dice: {dice.item():.3f}', end='')
+    return 0.5 * (ce + dice)
+
 
 train_loss = []
 validation_loss = []
 for epoch in range(n_epoch):
     start = time.time()
     loss = train_epoch(network2D, trainLoader2D, validLoader2D, device, total_loss, optimiser2D)
+    lr_scheduler2D.step()
     train_loss.append(loss[0])
     validation_loss.append(loss[1])
     elapsed_time = time.time() - start

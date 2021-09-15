@@ -21,52 +21,23 @@ def get_train_img(config, i):
 
 
 def main():
-    import resnetV2
-    print(resnetV2.ResNetV2(block_units=(3, 4, 9), width_factor=1))
-    quit()
-    path_img = '/Volumes/One Touch/Medical Decathlon Data/Task01_BrainTumour/imagesTr/BRATS_004.nii.gz'
-    # path_lbl = '/Volumes/One Touch/Medical Decathlon Data/Task01_BrainTumour/labelsTr/BRATS_004.nii.gz'
+    path_img = '/Volumes/One Touch/orig_med_data/ACDC/training/patient093/patient093_frame14.nii.gz'
+    path_lbl = '/Volumes/One Touch/orig_med_data/ACDC/training/patient093/patient093_frame14_gt.nii.gz'
     data = nib.load(path_img).get_fdata()
-    lbl = nib.load('/Volumes/One Touch/Medical Decathlon Data/Task01_BrainTumour/labelsTr/BRATS_004.nii.gz').get_fdata()
-    data = np.moveaxis(data, 3, 0)
-    lbl = util.one_hot(lbl)
-    data, lbl = preprocessing.crop(data, label=lbl)
-    util.img2gif(data[2], 2, 'brain.gif')
-    util.img2gif(data[2], 2, 'brain_labelled.gif', label=lbl)
-    # label = nib.load(path_lbl)
-    # data = np.swapaxes(data, 0, 3)
-    # cropped, _ = preprocessing.crop(data)
-    # util.img2gif(data[2], 1, 'brain.gif')
-    # util.img2gif(cropped[2], 1, 'brain_cropped.gif')
-    # util.img2gif(data.get_fdata()[:, :, :, 0], 2, 'brain_tumour0.gif', util.one_hot(label.get_fdata()))
-    # util.img2gif(data.get_fdata()[:, :, :, 0], 2, 'brain0.gif')
-    # util.img2gif(data.get_fdata()[:, :, :, 1], 2, 'brain_tumour1.gif', util.one_hot(label.get_fdata()))
-    # util.img2gif(data.get_fdata()[:, :, :, 1], 2, 'brain1.gif')
-    # util.img2gif(data.get_fdata()[:, :, :, 2], 2, 'brain_tumour2.gif', util.one_hot(label.get_fdata()))
-    # util.img2gif(data.get_fdata()[:, :, :, 2], 2, 'brain2.gif')
-    # util.img2gif(data.get_fdata()[:, :, :, 3], 2, 'brain_tumour3.gif', util.one_hot(label.get_fdata()))
-    # util.img2gif(data.get_fdata()[:, :, :, 3], 2, 'brain3.gif')
-    # label = nib.load('/Volumes/One Touch/ACDC/training/patient001/patient001_frame01_gt.nii.gz')
-    # print(data.get_fdata().shape)
-    # util.img2gif(data.get_fdata(), 2, 'heart.gif', label=util.one_hot(label.get_fdata(), num_classes=4))
-    # name = 'Task04_Hippocampus'
-    # dataset.prepare_synapse_dataset('/Volumes/One Touch', 'synapse')
+    lbl = nib.load(path_lbl).get_fdata()
+    print(data.shape)
+    print(lbl.shape)
+
+
+    # lbl = np.moveaxis(np.array(util.one_hot(torch.from_numpy(lbl))), 1, 0)
+    util.img2gif(data, 2, 'heart.gif')
+    util.img2gif(lbl, 2, 'heart_label.gif')
 
 
 def main2():
-    img_size = [126, 96, 192]
-    img = torch.zeros([1 if i < 2 else img_size[i-2] for i in range(5)])
-    print("Image Created")
-    net = VisionTransformer(get_r50_b16_config(dims=3, img_size=img_size))
-    print("Network Created")
-    out = net(img)
-    print(out.shape)
-    pass
-
-
-def main3():
     import preprocessing
-    preprocessing.prepare_dataset('/Volumes/One Touch/med_data', 'Task04_Hippocampus', 4*1024**3)
+    path = '/Users/nicholasprowse/Documents/Engineering/FYP/data'
+    preprocessing.prepare_dataset(path, 'Task04_Hippocampus', 4*1024**3)
 
 
 def main4():
@@ -80,9 +51,7 @@ def main4():
 
 
 if __name__ == '__main__':
-    import preprocessing
-    preprocessing.prepare_dataset('/Users/nicholasprowse/Documents/Engineering/FYP/data',
-                                  'Task04_Hippocampus', 4 * 1024**3)
+    main2()
 
 
 def load_dataset_fingerprint(path):
