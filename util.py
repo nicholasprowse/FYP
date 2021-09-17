@@ -50,8 +50,8 @@ def img2gif(img, dim, file, label=None):
             label_colours[:, :, :, 0] += i * label[i + 1] / num_labels
 
         label_colours = 255 * colors.hsv_to_rgb(label_colours)
-        # img[label[0] == 0] = label_colours[label[0] == 0]
-        img = np.zeros_like(img)
+        # Uncomment this line to get just the label, without original image
+        # img = np.zeros_like(img)
         img[label[0] == 0] = label_colours[label[0] == 0]
 
     img = np.moveaxis(img, dim, 0)

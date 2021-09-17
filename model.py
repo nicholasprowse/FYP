@@ -5,18 +5,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as f
 from torch.nn import Dropout, Softmax, Linear, Conv2d, Conv3d, LayerNorm
-import ml_collections
 from resnetV2 import ResNetV2
 from functools import reduce
 from torch.nn.functional import interpolate
 
 
+class X:
+    """Dummy class to create config structures"""
+    pass
+
+
 def get_b16_config():
     """Returns the ViT-B/16 configuration."""
-    config = ml_collections.ConfigDict()
-    config.patches = ml_collections.ConfigDict({'size': [16, 16]})
+    config = X()
+    config.patches = X()
+    config.patches.size = [16, 16]
     config.hidden_size = 768
-    config.transformer = ml_collections.ConfigDict()
+    config.transformer = X()
     config.transformer.mlp_dim = 3072
     config.transformer.num_heads = 12
     config.transformer.num_layers = 12
@@ -37,10 +42,11 @@ def get_b16_config():
 
 def get_testing():
     """Returns a minimal configuration for testing."""
-    config = ml_collections.ConfigDict()
-    config.patches = ml_collections.ConfigDict({'size': [16, 16]})
+    config = X()
+    config.patches = X()
+    config.patches.size = [16, 16]
     config.hidden_size = 1
-    config.transformer = ml_collections.ConfigDict()
+    config.transformer = X()
     config.transformer.mlp_dim = 1
     config.transformer.num_heads = 1
     config.transformer.num_layers = 1
@@ -55,7 +61,7 @@ def get_r50_b16_config(dims=2, img_size=224, channels=1, num_classes=2):
     """Returns the Resnet50 + ViT-B/16 configuration."""
     config = get_b16_config()
     config.patches.grid = [16] * dims
-    config.resnet = ml_collections.ConfigDict()
+    config.resnet = X()
     config.resnet.num_layers = (3, 4, 9)
     config.resnet.width_factor = 1
     config.dims = dims
@@ -76,13 +82,13 @@ def get_embeddings_shape(config):
     """
     Returns the shape of the embeddings before they are flattened, and the shape of each patch
     """
-    if config.patches.get("grid") is not None:  # ResNet
-        grid_size = torch.tensor(config.patches["grid"])
+    if config.patches.grid is not None:  # ResNet
+        grid_size = torch.tensor(config.patches.grid)
         resnet_out_size = torch.tensor(config.img_size)
         for i in range(4):
-            resnet_out_size = torch.div(resnet_out_size+1, 2, rounding_mode='floor')
-        patch_size = torch.clamp(torch.div(resnet_out_size, grid_size, rounding_mode='floor'), min=1)
-        grid_size_real = torch.div(resnet_out_size, patch_size, rounding_mode='floor')
+            resnet_out_size = resnet_out_size+1 // 2
+        patch_size = torch.clamp(resnet_out_size // grid_size, min=1)
+        grid_size_real = resnet_out_size // patch_size
         return grid_size_real.int().tolist(), patch_size.int().tolist()
     else:
         patch_size = config.patches["size"]
@@ -102,10 +108,10 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super(MLP, self).__init__()
-        self.fc1 = Linear(config.hidden_size, config.transformer["mlp_dim"])
-        self.fc2 = Linear(config.transformer["mlp_dim"], config.hidden_size)
+        self.fc1 = Linear(config.hidden_size, config.transformer.mlp_dim)
+        self.fc2 = Linear(config.transformer.mlp_dim, config.hidden_size)
         self.act_fn = f.relu  # TODO: Test this with both relu and gelu
-        self.dropout = Dropout(config.transformer["dropout_rate"])
+        self.dropout = Dropout(config.transformer.dropout_rate)
 
         self._init_weights()
 
@@ -133,7 +139,7 @@ class Attention(nn.Module):
 
     def __init__(self, config):
         super(Attention, self).__init__()
-        self.num_attention_heads = config.transformer["num_heads"]
+        self.num_attention_heads = config.transformer.num_heads
         self.attention_head_size = int(config.hidden_size / self.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
@@ -142,8 +148,8 @@ class Attention(nn.Module):
         self.value = Linear(config.hidden_size, self.all_head_size)
 
         self.out = Linear(config.hidden_size, config.hidden_size)
-        self.attn_dropout = Dropout(config.transformer["attention_dropout_rate"])
-        self.proj_dropout = Dropout(config.transformer["attention_dropout_rate"])
+        self.attn_dropout = Dropout(config.transformer.attention_dropout_rate)
+        self.proj_dropout = Dropout(config.transformer.attention_dropout_rate)
 
         self.softmax = Softmax(dim=-1)
 
@@ -197,7 +203,7 @@ class Embeddings(nn.Module):
         super(Embeddings, self).__init__()
         self.hybrid = None
         self.config = config
-        self.hybrid = config.patches.get("grid") is not None
+        self.hybrid = config.patches.grid is not None
         embeddings_shape, patch_size = get_embeddings_shape(config)
         patch_size = tuple(patch_size)
         n_patches = int(reduce(lambda a, b: a * b, embeddings_shape))
@@ -213,7 +219,7 @@ class Embeddings(nn.Module):
                                      stride=patch_size)
         self.position_embeddings = nn.Parameter(torch.zeros(1, n_patches, config.hidden_size))
 
-        self.dropout = Dropout(config.transformer["dropout_rate"])
+        self.dropout = Dropout(config.transformer.dropout_rate)
 
     def forward(self, x):
         if self.hybrid:
@@ -271,7 +277,7 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.layer = nn.ModuleList()
         self.encoder_norm = LayerNorm(config.hidden_size, eps=1e-6)
-        for _ in range(config.transformer["num_layers"]):
+        for _ in range(config.transformer.num_layers):
             layer = Block(config)
             # TODO Why does this need to be copied???
             self.layer.append(copy.deepcopy(layer))
@@ -430,7 +436,7 @@ class VisionTransformer(nn.Module):
         self.transformer = Transformer(config)
         self.decoder = DecoderCup(config)
         conv_type = Conv2d if config.dims == 2 else Conv3d
-        self.segmentation_head = conv_type(config['decoder_channels'][-1], config['n_classes'],
+        self.segmentation_head = conv_type(config.decoder_channels[-1], config.n_classes,
                          kernel_size=3, padding=1)
 
     def forward(self, x):

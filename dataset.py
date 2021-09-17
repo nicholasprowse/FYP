@@ -73,9 +73,9 @@ class Loader2D(Dataset):
                 break
 
         with np.load(join(self.path, f'train_{image_id}.npz')) as data:
-            img = torch.from_numpy(data['data'])[:, :, :, i]
-            lbl = torch.from_numpy(data['label'])[:, :, i]
+            img = data['data'][:, :, :, i]
+            lbl = data['label'][:, :, i]
 
         img = center_crop(img, self.img_size[:3])
         lbl = center_crop(lbl, self.img_size[1:3])
-        return img.float(), lbl.long()
+        return torch.from_numpy(img).float(), torch.from_numpy(lbl).long()
