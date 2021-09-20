@@ -19,9 +19,16 @@ class Loader3D(Dataset):
         self.patch_grid_shape = torch.tensor(self.json['patch_grid_shape'])
         self.num_patches = int(reduce(lambda a, b: a*b, self.patch_grid_shape))
         self.transform = transform
+        self.do_transform = transform is not None
 
     def __len__(self):
         return self.len * self.num_patches
+
+    def train(self):
+        self.do_transform = self.transform is not None
+
+    def eval(self):
+        self.do_transform = False
 
     def __getitem__(self, i):
         image_id = i // self.num_patches
@@ -45,10 +52,11 @@ class Loader3D(Dataset):
         img = img[:, lb[0]:ub[0], lb[1]:ub[1], lb[2]:ub[2]]
         lbl = lbl[lb[0]:ub[0], lb[1]:ub[1], lb[2]:ub[2]]
 
-        if self.transform is not None:
+        if self.do_transform:
             img, label = self.transform((img, lbl))
 
-        return torch.from_numpy(img).float(), torch.from_numpy(lbl).long()
+        # We must copy the numpy arrays as torch does not support numpy arrays with negative strides (flipped arrays)
+        return torch.from_numpy(img.copy()).float(), torch.from_numpy(lbl.copy()).long()
 
 
 class Loader2D(Dataset):
@@ -59,9 +67,16 @@ class Loader2D(Dataset):
         self.len = self.json['total_depth']
         self.path = path
         self.transform = transform
+        self.do_transform = transform is not None
 
     def __len__(self):
         return self.len
+
+    def train(self):
+        self.do_transform = self.transform is not None
+
+    def eval(self):
+        self.do_transform = False
 
     def __getitem__(self, i):
         image_id = 0
@@ -78,4 +93,9 @@ class Loader2D(Dataset):
 
         img = center_crop(img, self.img_size[:3])
         lbl = center_crop(lbl, self.img_size[1:3])
-        return torch.from_numpy(img).float(), torch.from_numpy(lbl).long()
+
+        if self.do_transform:
+            img, lbl = self.transform((img, lbl))
+
+        # We must copy the numpy arrays as torch does not support numpy arrays with negative strides (flipped arrays)
+        return torch.from_numpy(img.copy()).float(), torch.from_numpy(lbl.copy()).long()

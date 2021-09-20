@@ -86,7 +86,7 @@ def get_embeddings_shape(config):
         grid_size = torch.tensor(config.patches.grid)
         resnet_out_size = torch.tensor(config.img_size)
         for i in range(4):
-            resnet_out_size = resnet_out_size+1 // 2
+            resnet_out_size = (resnet_out_size + 1) // 2
         patch_size = torch.clamp(resnet_out_size // grid_size, min=1)
         grid_size_real = resnet_out_size // patch_size
         return grid_size_real.int().tolist(), patch_size.int().tolist()
@@ -229,7 +229,6 @@ class Embeddings(nn.Module):
         x = self.patch_embeddings(x)  # (B, hidden. n_patches^(1/2), n_patches^(1/2))
         x = x.flatten(2)
         x = x.transpose(-1, -2)  # (B, n_patches, hidden)
-
         embeddings = x + self.position_embeddings
         embeddings = self.dropout(embeddings)
         return embeddings, features
@@ -390,7 +389,7 @@ class DecoderCup(nn.Module):
             skip_channels[3 - i] = 0
 
         blocks = [DecoderBlock(config, in_channels[i], out_channels[i],
-                               2**(3-i), skip_channels=skip_channels[i]) for i in range(4)]
+                               2 ** (3 - i), skip_channels=skip_channels[i]) for i in range(4)]
         self.blocks = nn.ModuleList(blocks)
 
         self.embeddings_shape, _ = get_embeddings_shape(config)
@@ -437,7 +436,7 @@ class VisionTransformer(nn.Module):
         self.decoder = DecoderCup(config)
         conv_type = Conv2d if config.dims == 2 else Conv3d
         self.segmentation_head = conv_type(config.decoder_channels[-1], config.n_classes,
-                         kernel_size=3, padding=1)
+                                           kernel_size=3, padding=1)
 
     def forward(self, x):
         x, features = self.transformer(x)  # (B, n_patch, hidden)

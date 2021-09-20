@@ -62,6 +62,7 @@ class PreActBottleneck(nn.Module):
         cout = cout or cin
         cmid = cmid or cout//4
 
+        # For ResNet50
         self.gn1 = nn.GroupNorm(32, cmid, eps=1e-6)
         self.conv1 = conv1x1(cin, cmid, dims=dims, bias=False)
         self.gn2 = nn.GroupNorm(32, cmid, eps=1e-6)
@@ -69,6 +70,13 @@ class PreActBottleneck(nn.Module):
         self.gn3 = nn.GroupNorm(32, cout, eps=1e-6)
         self.conv3 = conv1x1(cmid, cout, dims=dims, bias=False)
         self.relu = nn.ReLU(inplace=True)
+
+        # For ResNet34/18
+        # self.gn1 = nn.GroupNorm(32, cout, eps=1e-6)
+        # self.conv1 = conv3x3(cin, cout, dims=dims, stride=stride, bias=False)
+        # self.gn2 = nn.GroupNorm(32, cout, eps=1e-6)
+        # self.conv2 = conv3x3(cout, cout, dims=dims, bias=False)
+        # self.relu = nn.ReLU(inplace=True)
 
         if stride != 1 or cin != cout:
             # Projection also with pre-activation according to paper.
@@ -83,10 +91,14 @@ class PreActBottleneck(nn.Module):
             residual = self.downsample(x)
             residual = self.gn_proj(residual)
 
-        # Unit's branch
+        # ResNet50
         y = self.relu(self.gn1(self.conv1(x)))
         y = self.relu(self.gn2(self.conv2(y)))
         y = self.gn3(self.conv3(y))
+
+        # ResNet18/34
+        # y = self.relu(self.gn1(self.conv1(x)))
+        # y = self.gn2(self.conv2(y))
 
         y = self.relu(residual + y)
         return y

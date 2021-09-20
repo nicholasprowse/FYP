@@ -21,17 +21,16 @@ def get_train_img(config, i):
 
 
 def main():
-    path_img = '/Volumes/One Touch/orig_med_data/ACDC/training/patient093/patient093_frame14.nii.gz'
-    path_lbl = '/Volumes/One Touch/orig_med_data/ACDC/training/patient093/patient093_frame14_gt.nii.gz'
+    path_img = 'data/Task04_Hippocampus/TrImg_0.nii.gz'
+    path_lbl = 'data/Task04_Hippocampus/TrLbl_0.nii.gz'
     data = nib.load(path_img).get_fdata()
     lbl = nib.load(path_lbl).get_fdata()
     print(data.shape)
     print(lbl.shape)
 
-
-    # lbl = np.moveaxis(np.array(util.one_hot(torch.from_numpy(lbl))), 1, 0)
-    util.img2gif(data, 2, 'heart.gif')
-    util.img2gif(lbl, 2, 'heart_label.gif')
+    lbl = np.moveaxis(np.array(util.one_hot(torch.from_numpy(lbl))), 1, 0)
+    util.img2gif(data, 2, 'hippocampus.gif')
+    util.img2gif(data, 2, 'hippocampus_labelled.gif', label=lbl)
 
 
 def main2():
@@ -51,7 +50,7 @@ def main4():
 
 
 if __name__ == '__main__':
-    main2()
+    main()
 
 
 def load_dataset_fingerprint(path):

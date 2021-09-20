@@ -13,7 +13,7 @@ class RandomFlip:
 
     def __call__(self, sample):
         img, lbl = sample
-        axes = np.squeeze(np.array(torch.nonzero(torch.randint(2, (3,)))))
+        axes = np.squeeze(np.array(torch.nonzero(torch.randint(2, (img.ndim-1,)), as_tuple=False)))
         img = np.flip(img, axes+1)  # Add one due to channels axis
         lbl = np.flip(lbl, axes)
         return img, lbl
@@ -37,30 +37,35 @@ class RandomRotateAndScale:
             lbl = center_crop(lbl, size[1:])
 
         if random[0] <= self.prob_rotate:
-            angle = (torch.rand(3)-0.5)*60
-            if self.anisotropic:
-                angle[:2] /= 2
-            img = ndimage.rotate(img, angle[0], (2, 3), reshape=False)
-            img = ndimage.rotate(img, angle[1], (1, 3), reshape=False)
-            img = ndimage.rotate(img, angle[2], (1, 2), reshape=False)
-            lbl = ndimage.rotate(lbl, angle[0], (1, 2), reshape=False, order=0)
-            lbl = ndimage.rotate(lbl, angle[1], (0, 2), reshape=False, order=0)
-            lbl = ndimage.rotate(lbl, angle[2], (0, 1), reshape=False, order=0)
+            if img.ndim == 4:
+                angle = (torch.rand(3)-0.5)*60
+                if self.anisotropic:
+                    angle[:2] /= 2
+                img = ndimage.rotate(img, angle[0], (2, 3), reshape=False)
+                img = ndimage.rotate(img, angle[1], (1, 3), reshape=False)
+                img = ndimage.rotate(img, angle[2], (1, 2), reshape=False)
+                lbl = ndimage.rotate(lbl, angle[0], (1, 2), reshape=False, order=0)
+                lbl = ndimage.rotate(lbl, angle[1], (0, 2), reshape=False, order=0)
+                lbl = ndimage.rotate(lbl, angle[2], (0, 1), reshape=False, order=0)
+            else:
+                angle = (torch.rand(3) - 0.5) * 60
+                img = ndimage.rotate(img, angle[2], (1, 2), reshape=False)
+                lbl = ndimage.rotate(lbl, angle[2], (0, 1), reshape=False, order=0)
 
         return img, lbl
 
 
 class RandomGaussianBlur:
     def __init__(self, prob=0.2):
-        self.prob = 0.2
+        self.prob = prob
 
     def __call__(self, sample):
         img, lbl = sample
         if torch.rand(1) > self.prob:
             # Each dimension is blurred with a probability of 50%
-            mask = torch.randint(2, (3,))
+            mask = torch.randint(2, (img.ndim-1,))
             stddev = torch.rand(3) + 0.5
-            for axis in range(3):
+            for axis in range(img.ndim-1):
                 if mask[axis] == 1:
                     img = ndimage.gaussian_filter1d(img, float(stddev[axis]), axis=axis+1)
 
