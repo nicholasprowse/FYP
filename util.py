@@ -5,6 +5,7 @@ import imageio
 import torch.nn as nn
 from torch.nn.functional import pad
 import os
+from os.path import join
 
 
 def one_hot(label, n_classes=None):
@@ -106,10 +107,11 @@ class DiceLoss(nn.Module):
         return loss / self.n_classes
 
 
-def generate_example_output(model, dataset, device, epoch, n_class, dims=2):
+def generate_example_output(training_dict, device, epoch, n_class):
     """Saves a visualisation of the model output and the ground truth"""
-    if dims == 2:
-        model.eval()
+    dataset = training_dict['dataset']
+    if training_dict['dims'] == 2:
+        training_dict['model'].eval()
         dataset.eval()
         img_slices = [0] * dataset.depths[0]
         lbl_slices = [0] * dataset.depths[0]
@@ -118,44 +120,40 @@ def generate_example_output(model, dataset, device, epoch, n_class, dims=2):
         image = torch.stack(img_slices)
         label = torch.stack(lbl_slices)
         label = one_hot(label, n_class).numpy()
-        prediction = model(image.to(device)).detach()
+        prediction = training_dict['model'](image.to(device)).detach()
         prediction = torch.argmax(prediction, dim=1)
         prediction = one_hot(prediction, n_class).cpu().numpy()
         image = image.numpy()
-        if not os.path.exists('out'):
-            os.mkdir('out')
         empty_label = np.zeros_like(label)
         empty_label[:, 0, :, :] = 1
         label = np.swapaxes(np.concatenate([empty_label, label, prediction], axis=2), 0, 1)
         image = np.tile(image[:, 0], (1, 3, 1))
-        img2gif(image, 2, f"out/2D_epoch{epoch}.gif", label=label)
+        img2gif(image, 2, join(training_dict['out_path'], f"2D_epoch{epoch}.gif"), label=label)
     else:
-        model.eval()
+        training_dict['model'].eval()
         dataset.eval()
         image, label = dataset[0]
         image = image.unsqueeze(0)
         label = one_hot(label.unsqueeze(0), n_class).numpy().squeeze()
-        prediction = model(image.to(device)).detach()
+        prediction = training_dict['model'](image.to(device)).detach()
         prediction = torch.argmax(prediction, dim=1)
         prediction = one_hot(prediction, n_class).cpu().numpy().squeeze()
         image = image.numpy()
-        if not os.path.exists('out'):
-            os.mkdir('out')
         empty_label = np.zeros_like(label)
         empty_label[0, :, :, :] = 1
         label = np.concatenate([empty_label, label, prediction], axis=2)
         image = np.tile(image[0, 0], (1, 3, 1))
-        img2gif(image, 2, f"out/3D_epoch{epoch}.gif", label=label)
+        img2gif(image, 2, join(training_dict['out_path'], f"3D_epoch{epoch}.gif"), label=label)
 
 
 def load_into_dict(training_dict):
     """
     Loads the given saved model into the dictionary, and returns the next training epoch that needs to be completed
     """
-    if os.path.isfile(training_dict['save_path']):
-        check_point = torch.load(training_dict['save_path'])
-        training_dict['model'].load_state_dict(check_point['model_state_dict'])
+    if os.path.isfile(training_dict['model_path']):
+        check_point = torch.load(training_dict['model_path'])
         training_dict['optimiser'].load_state_dict(check_point['optimiser_state_dict'])
+        training_dict['model'].load_state_dict(check_point['model_state_dict'])
         training_dict['lr_scheduler'].load_state_dict(check_point['scheduler_state_dict'])
         training_dict['train_logger'] = check_point['train_loss']
         training_dict['validation_logger'] = check_point['valid_loss']

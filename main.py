@@ -12,17 +12,24 @@ from torch.nn.modules.loss import CrossEntropyLoss
 from trainer import train_and_evaluate
 import transforms
 from torchvision.transforms import Compose
+import os
+import matplotlib.pyplot as plt
+import matplotlib
 
+matplotlib.use("Agg")
 data_path = 'data/Task04_Hippocampus_processed'
+out_path = 'out'
 n_epoch = 100
 decision_epoch = 100
-initial_lr = 0.2
+initial_lr = 0.35
 load_checkpoint = True
 data_config = json.load(open(join(data_path, 'data.json')))
 device = torch.device(0 if torch.cuda.is_available() else 'cpu')
+if not os.path.exists(out_path):
+    os.mkdir(out_path)
 
-dict2D = {'dims': 2, 'save_path': join(data_path, 'model2D.pt')}
-dict3D = {'dims': 3, 'save_path': join(data_path, 'model3D.pt')}
+dict2D = {'dims': 2, 'out_path': out_path, 'model_path': join(out_path, 'model2D.pt')}
+dict3D = {'dims': 3, 'out_path': out_path, 'model_path': join(out_path, 'model3D.pt')}
 
 transform = Compose([
     transforms.RandomRotateAndScale(data_config),
@@ -90,11 +97,31 @@ def total_loss(out, target):
 dict2D['loss_fn'] = total_loss
 dict3D['loss_fn'] = total_loss
 
+print(f'{dict3D["dims"]}D - LR: {dict3D["lr_scheduler"].get_last_lr()[0]:.3f}, ', end='')
 for epoch in range(dict3D['start_epoch'], decision_epoch):
     train_and_evaluate(epoch, device, dict3D, data_config['n_classes'])
 
+plt.figure()
+plt.plot(dict3D['train_logger'])
+plt.plot(dict3D['validation_logger'])
+plt.legend(["Training Loss", "Validation Loss"])
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Loss of 3D network")
+plt.savefig("3D_plot.pdf")
+
+print(f'{dict2D["dims"]}D - LR: {dict2D["lr_scheduler"].get_last_lr()[0]:.3f}, ', end='')
 for epoch in range(dict2D['start_epoch'], decision_epoch):
     train_and_evaluate(epoch, device, dict2D, data_config['n_classes'])
+
+plt.figure()
+plt.plot(dict2D['train_logger'])
+plt.plot(dict2D['validation_logger'])
+plt.legend(["Training Loss", "Validation Loss"])
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Loss of 2D network")
+plt.savefig("2D_plot.pdf")
 
 if dict2D['validation_logger'][-1] < dict3D['validation_logger'][-1]:
     final_dict = dict2D

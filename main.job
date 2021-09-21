@@ -14,7 +14,7 @@
 ### change the 1 below to match the # of cores needed
 #SBATCH --cpus-per-task=1
 
-#SBATCH --gres=gpu:P100:2
+#SBATCH --gres=gpu:P100:1
 
 #SBATCH --partition=short,gpu
 

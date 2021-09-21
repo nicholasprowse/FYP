@@ -4,7 +4,6 @@ import json
 
 import numpy as np
 import nibabel as nib
-import util
 import skimage.transform
 from functools import reduce
 
@@ -100,7 +99,7 @@ def first_pass(path, name):
     config['anisotropic_axis'] = int(np.argmax(config['median_spacing']))
     config['median_spacing'][2] /= 1.01
     config['tenth_percentile_spacing'] = np.percentile(train_spacing[config['anisotropic_axis'], :], 10)
-    config['classes'] = list(classes)
+    config['n_classes'] = len(list(classes))
 
     config['target_spacing'] = config['median_spacing']
     if config['isotropy'] >= 3:
@@ -208,6 +207,15 @@ def second_pass(config, memory_constraint):
     with open(join(config['path'], 'data.json'), 'w') as outfile:
         json.dump(config, outfile)
 
+
+def preprocess_img(config, image, raw_spacing, label=None):
+    image = normalise(image, config)
+    image, label = resize(image, raw_spacing, config, label=label)
+    # move anisotropic axis to the third axis
+    image = np.swapaxes(image, 3, config['anisotropic_axis'] + 1)
+    if label is not None:
+        label = np.swapaxes(label, 2, config['anisotropic_axis'])
+    return image, label
 
 def resize(data, spacing, config, label=None):
     new_size = data.shape[1:] * spacing / config['target_spacing']
