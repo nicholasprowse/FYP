@@ -164,7 +164,7 @@ class ResNetV2(nn.Module):
         ])).float()
 
         pool = nn.MaxPool2d if config.dims == 2 else nn.MaxPool3d
-        self.pool = pool(kernel_size=3, stride=2, padding=0)
+        self.pool = pool(kernel_size=3, stride=1, padding=0)
 
         self.body = nn.Sequential(OrderedDict([
             ('block1', nn.Sequential(OrderedDict(
@@ -184,27 +184,11 @@ class ResNetV2(nn.Module):
                 ))),
         ]))
 
-    """
-        down_sizes = [torch.tensor(config.img_size)]
-        down_sizes.append(1 + (down_sizes[-1] - 1) // 2)
-        down_sizes.append(1 + (down_sizes[-1] - 3) // 2)
-        for i in range(len(self.body)-2):
-            down_sizes.append(1 + (down_sizes[-1] - 1) // 2)
-        up_sizes = [down_sizes[-1]]
-        for i in range(len(self.body)):
-            up_sizes.append(up_sizes[-1] * 2)
-        mode = 'bilinear' if config.dims == 2 else 'trilinear'
-
-        self.up_sample = [nn.Identity() if torch.all(down_sizes[i-3] == up_sizes[2-i]) else
-                          nn.Upsample(tuple(up_sizes[2-i]), mode=mode, align_corners=True)
-                          for i in range(len(self.body))]
-    """
-
     def forward(self, x):
         features = [x]
         x = self.root(x)
-        features.append(x)
-        x = self.pool(x)
+        # features.append(x)
+        # x = self.pool(x)
         for i in range(len(self.body)-1):
             x = self.body[i](x)
             features.append(x)

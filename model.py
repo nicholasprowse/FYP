@@ -19,7 +19,7 @@ def get_b16_config():
     """Returns the ViT-B/16 configuration."""
     config = X()
     config.patches = X()
-    config.patches.size = [8, 8]
+    config.patches.size = [16, 16]
     config.hidden_size = 768
     config.transformer = X()
     config.transformer.mlp_dim = 3072
@@ -28,10 +28,6 @@ def get_b16_config():
     config.transformer.attention_dropout_rate = 0.0
     config.transformer.dropout_rate = 0.1
 
-    config.classifier = 'seg'
-    config.representation_size = None
-    config.resnet_pretrained_path = None
-    config.pretrained_path = '../model/vit_checkpoint/imagenet21k/ViT-B_16.npz'
     config.patch_size = 16
 
     config.decoder_channels = (256, 128, 64, 16)
@@ -67,12 +63,10 @@ def get_r50_b16_config(dims=2, img_size=224, channels=1, num_classes=2):
     config.dims = dims
     config.img_size = img_size
     config.input_channels = channels
-    config.classifier = 'seg'
-    config.pretrained_path = '../model/vit_checkpoint/imagenet21k/R50+ViT-B_16.npz'
-    config.decoder_channels = (256, 128, 64, 16)
-    config.skip_channels = [512, 256, 64, channels]
+    config.decoder_channels = (256, 64, 16)
+    config.skip_channels = [512, 256, channels]
     config.n_classes = num_classes
-    config.n_skip = 4
+    config.n_skip = 3
     config.activation = 'softmax'
 
     return config
@@ -85,7 +79,7 @@ def get_embeddings_shape(config):
     if config.patches.grid is not None:  # ResNet
         grid_size = torch.tensor(config.patches.grid)
         resnet_out_size = torch.tensor(config.img_size)
-        for i in range(4):
+        for i in range(config.n_skip):      # n_skip represents the number of downsampling layers in the resnet
             resnet_out_size = (resnet_out_size + 1) // 2
         patch_size = torch.clamp(resnet_out_size // grid_size, min=1)
         grid_size_real = resnet_out_size // patch_size
@@ -385,11 +379,11 @@ class DecoderCup(nn.Module):
         # isn't used. This is needed because the decoder block needs to know how many skip channels it gets so that
         # it can initialise its convolutional layers
         skip_channels = [0, 0, 0, 0] if self.config.n_skip == 0 else self.config.skip_channels
-        for i in range(4 - self.config.n_skip):
-            skip_channels[3 - i] = 0
+        # for i in range(4 - self.config.n_skip):
+        #     skip_channels[3 - i] = 0
 
         blocks = [DecoderBlock(config, in_channels[i], out_channels[i],
-                               2 ** (3 - i), skip_channels=skip_channels[i]) for i in range(4)]
+                               2 ** (3 - i), skip_channels=skip_channels[i]) for i in range(config.n_skip)]
         self.blocks = nn.ModuleList(blocks)
 
         self.embeddings_shape, _ = get_embeddings_shape(config)

@@ -18,8 +18,8 @@ import matplotlib
 from output import generate_test_predictions, convert_output_to_nifti
 
 matplotlib.use("Agg")
-data_path = 'data/Task01_BrainTumour_processed'
-out_path = 'out(brain)'
+data_path = 'data/Task04_Hippocampus_processed'
+out_path = 'out(hippo less downsampling)'
 n_epoch = 100
 decision_epoch = 100
 initial_lr = 0.1
