@@ -6,24 +6,34 @@ import torch.nn as nn
 from torch.nn.functional import pad
 import os
 from os.path import join
+import preprocessing
 
 
-def one_hot(label, n_classes=None):
+def one_hot(label, n_classes=None, batch=True):
     """
     Takes a label formatted where each class is a different consecutive integer. Converts this into a
     one hot encoded label. If input has dimensions of (x1, x2, ..., xn) then output will have dimension
     (num_classes, x1, x2, ..., xn)
     :param label: label to be converted to one hot encoding
     :param n_classes: number of classes in the label
+    :param batch: whether to treat this as a batch of labels or a single image. For a single image the class dimension
+    is inserted at dimension 0, while for a batch it is inserted at dimension 1 so that the batches are still the first
+    dimension
     :return:
     """
     if n_classes is None:
         n_classes = torch.max(label)
     dims = list(label.shape)
-    dims.insert(1, n_classes)
-    one_hot_encoding = torch.zeros(dims).int().to(label.device)
+    dims.insert(1 if batch else 0, n_classes)
+    if type(label) == np.ndarray:
+        one_hot_encoding = np.zeros(dims)
+    else:
+        one_hot_encoding = torch.zeros(dims).int().to(label.device)
     for i in range(n_classes):
-        one_hot_encoding[:, i, :, :][label == i] = 1
+        if batch:
+            one_hot_encoding[:, i][label == i] = 1
+        else:
+            one_hot_encoding[i][label == i] = 1
     return one_hot_encoding
 
 
@@ -39,7 +49,7 @@ def img2gif(img, dim, file, label=None):
     """
     img = np.array(img)
     img = np.uint8(img * 255 / np.max(img))
-    dim %= 3    # Force dim to be 0, 1 or 2
+    dim %= 3  # Force dim to be 0, 1 or 2
     img = np.expand_dims(img, 3)
     img = np.tile(img, [1, 1, 1, 3])
 
@@ -61,102 +71,114 @@ def img2gif(img, dim, file, label=None):
     imageio.mimsave(file, images)
 
 
-def _dice_loss(score, target):
-    target = target.float()
-    smooth = 1e-5
-    intersect = torch.sum(score * target)
-    y_sum = torch.sum(target * target)
-    z_sum = torch.sum(score * score)
-    loss = (2 * intersect + smooth) / (z_sum + y_sum + smooth)
-    loss = 1 - loss
-    return loss
-
-
-def _one_hot_encoder(self, input_tensor):
-    tensor_list = []
-    for i in range(self.n_classes):
-        temp_prob = input_tensor == i  # * torch.ones_like(input_tensor)
-        tensor_list.append(temp_prob.unsqueeze(1))
-    output_tensor = torch.cat(tensor_list, dim=1)
-    return output_tensor.float()
-
-
 def center_crop(a, size):
-    """Pads/crops and image appropriately, so the original image is centered, and has the given size"""
-    padding_amount = tuple([int((size[i // 2] - a.shape[i // 2] + i % 2) // 2) for i in
-                            range(2*len(size)-1, -1, -1)])
-    return np.array(pad(torch.from_numpy(a), padding_amount))
+    """
+    Pads/crops and image appropriately, so the original image is centered, and has the given size. If size has length
+    N, then only the last N dimensions are cropped/padded.
+    This operation is reversible. i.e. If a has size X and is padded to a size of Y, then cropped back to its original
+    size X, then a will be unchanged.
+    """
+    total_padding = []
+    for dim in range(-1, -len(size)-1, -1):
+        padding = [abs(size[dim] - a.shape[dim]) // 2] * 2
+        if (size[dim] - a.shape[dim]) % 2 == 1:
+            padding[1] += 1
+        if size[dim] - a.shape[dim] < 0:
+            padding = [-padding[0], -padding[1]]
+        total_padding += padding
+
+    total_padding = [int(i) for i in total_padding]
+    return np.array(pad(torch.from_numpy(a), total_padding))
 
 
-class DiceLoss(nn.Module):
-    def __init__(self, n_class):
-        super(DiceLoss, self).__init__()
-        self.n_class = n_class
+def compute_dice_score(ground_truth, prediction):
+    """
+    Compute soerensen-dice coefficient.
 
-    def forward(self, inputs, target, weight=None, softmax=False):
-        if softmax:
-            inputs = torch.softmax(inputs, dim=1)
-        target = one_hot(target, n_classes=self.n_class)
-        if weight is None:
-            weight = [1] * self.n_classes
-        assert inputs.size() == target.size(), 'predict {} & target {} shape do not match'.format(inputs.size(), target.size())
-        loss = 0.0
-        for i in range(0, self.n_classes):
-            dice = _dice_loss(inputs[:, i], target[:, i])
-            loss += dice * weight[i]
-        return loss / self.n_classes
+    compute the soerensen-dice coefficient between the ground truth mask `mask_gt`
+    and the predicted mask `mask_pred`.
+
+    Args:
+      ground_truth: 4-dim tensor. The ground truth mask.
+      prediction: 4-dim tensor. The predicted segmentation.
+
+    Returns:
+      the dice coefficient as float. If both masks are empty, the result is NaN
+
+    Adapted from Medical Segmentation Decathlon: http://medicaldecathlon.com/
+    """
+    n_classes = prediction.shape[1]
+    prediction = torch.argmax(prediction, dim=1)
+    prediction = one_hot(prediction, n_classes=n_classes, batch=True)
+    ground_truth = one_hot(ground_truth, n_classes=n_classes, batch=True)
+    score = 0
+    for i in range(1, ground_truth.shape[1]):
+        volume_sum = float(ground_truth[:, i].sum() + prediction[:, i].sum())
+        if volume_sum == 0:
+            score += 1
+        else:
+            volume_intersect = float((ground_truth[:, i] * prediction[:, i]).sum())
+            score += 2 * volume_intersect / volume_sum
+
+    return score / ground_truth.shape[1]
 
 
-def generate_example_output(training_dict, device, epoch, n_class):
+def generate_example_output(training_dict, data_config, device, epoch):
     """Saves a visualisation of the model output and the ground truth"""
+    import nibabel as nib
     dataset = training_dict['dataset']
-    if training_dict['dims'] == 2:
-        training_dict['model'].eval()
-        dataset.eval()
-        img_slices = [0] * dataset.depths[0]
-        lbl_slices = [0] * dataset.depths[0]
-        for i in range(dataset.depths[0]):
-            img_slices[i], lbl_slices[i] = dataset[i]
-        image = torch.stack(img_slices)
-        label = torch.stack(lbl_slices)
-        label = one_hot(label, n_class).numpy()
-        prediction = training_dict['model'](image.to(device)).detach()
-        prediction = torch.argmax(prediction, dim=1)
-        prediction = one_hot(prediction, n_class).cpu().numpy()
-        image = image.numpy()
-        empty_label = np.zeros_like(label)
-        empty_label[:, 0, :, :] = 1
-        label = np.swapaxes(np.concatenate([empty_label, label, prediction], axis=2), 0, 1)
-        image = np.tile(image[:, 0], (1, 3, 1))
-        img2gif(image, 2, join(training_dict['out_path'], f"2D_epoch{epoch}.gif"), label=label)
-    else:
-        training_dict['model'].eval()
-        dataset.eval()
-        image, label = dataset[0]
-        image = image.unsqueeze(0)
-        label = one_hot(label.unsqueeze(0), n_class).numpy().squeeze()
-        prediction = training_dict['model'](image.to(device)).detach()
-        prediction = torch.argmax(prediction, dim=1)
-        prediction = one_hot(prediction, n_class).cpu().numpy().squeeze()
-        image = image.numpy()
-        empty_label = np.zeros_like(label)
-        empty_label[0, :, :, :] = 1
-        label = np.concatenate([empty_label, label, prediction], axis=2)
-        image = np.tile(image[0, 0], (1, 3, 1))
-        img2gif(image, 2, join(training_dict['out_path'], f"3D_epoch{epoch}.gif"), label=label)
+    dims = training_dict['dims']
+    n_classes = data_config['n_classes']
+    training_dict['model'].eval()
+    dataset.eval()
+    # Load image and metadata
+    with np.load(join(data_config['path'], f'train_0.npz')) as data:
+        image = center_crop(data['image'], [data_config['channels']] + data_config['shape'])
+
+    raw_image = nib.load(join(data_config['raw_path'], f'trImg_0.nii.gz')).get_fdata()
+    raw_label = nib.load(join(data_config['raw_path'], f'trLbl_0.nii.gz')).get_fdata()
+    raw_image = np.expand_dims(raw_image, 0) if raw_image.ndim == 3 else np.moveaxis(raw_image, -1, -0)
+    raw_label = one_hot(raw_label, n_classes, batch=False)
+    # Prepare image for the model
+    image = np.moveaxis(image, 3, 0) if dims == 2 else np.expand_dims(image, 0)
+    image = torch.from_numpy(image).float()
+    # Make sure anisotropic axis is correct
+    raw_image = np.swapaxes(raw_image, 3, data_config['anisotropic_axis'] + 1)
+    raw_label = np.swapaxes(raw_label, 3, data_config['anisotropic_axis'] + 1)
+    # Generate the prediction with the model
+    prediction = training_dict['model'](image.to(device)).detach().cpu().numpy()
+    prediction = np.moveaxis(prediction, 0, 3) if dims == 2 else np.squeeze(prediction, 0)
+    image = np.moveaxis(image.numpy(), 0, 3) if dims == 2 else np.squeeze(image.numpy(), 0)
+    # Remove padding added in the dataloader
+    image, prediction = preprocessing.crop(image, label=prediction)
+    # Resize to original spacing
+    cropped_size = preprocessing.get_nonzero_size(raw_image)
+    prediction = preprocessing.resize_label(prediction, cropped_size, data_config)
+    # Add back in padding that was cropped out of original image
+    prediction = center_crop(prediction, raw_label.shape[1:])
+    prediction = one_hot(prediction, n_classes, batch=False)
+    # Stitch the three images together and save a visualisation of it
+    empty_label = np.zeros_like(raw_label)
+    empty_label[0, :, :, :] = 1
+    label = np.concatenate([empty_label, raw_label, prediction], axis=2)
+    image = np.tile(raw_image[0], (1, 3, 1))
+
+    img2gif(image, 2, join(training_dict['out_path'], f"{dims}D_epoch{epoch}.gif"), label=label)
 
 
-def load_into_dict(training_dict):
+def load_into_dict(training_dict, device):
     """
     Loads the given saved model into the dictionary, and returns the next training epoch that needs to be completed
     """
     if os.path.isfile(training_dict['model_path']):
-        check_point = torch.load(training_dict['model_path'])
+        check_point = torch.load(training_dict['model_path'], map_location=device)
         training_dict['optimiser'].load_state_dict(check_point['optimiser_state_dict'])
         training_dict['model'].load_state_dict(check_point['model_state_dict'])
         training_dict['lr_scheduler'].load_state_dict(check_point['scheduler_state_dict'])
         training_dict['train_logger'] = check_point['train_loss']
         training_dict['validation_logger'] = check_point['valid_loss']
+        training_dict['dice_logger'] = check_point['dice_score']
+        training_dict['do_component_suppression'] = check_point['do_component_suppression']
         print(f"{training_dict['dims']}D checkpoint loaded, starting from epoch:", check_point['epoch'])
         return check_point['epoch'] + 1
     else:
@@ -166,20 +188,20 @@ def load_into_dict(training_dict):
 
 
 class TverskyLoss(nn.Module):
-    def __init__(self, n_classes):
+    def __init__(self, n_classes, weight=None):
         super(TverskyLoss, self).__init__()
         self.n_classes = n_classes
+        self.weight = weight
 
-    def forward(self, prediction, ground_truth, weight=None, softmax=False):
+    def forward(self, prediction, ground_truth, softmax=False):
         if softmax:
             prediction = torch.softmax(prediction, dim=1)
         ground_truth = one_hot(ground_truth, n_classes=self.n_classes)
-        if weight is None:
-            weight = [1] * self.n_classes
+        weight = [1] * self.n_classes if self.weight is None else self.weight
         assert prediction.size() == ground_truth.size(), \
             'predict {} & target {} shape do not match'.format(prediction.size(), ground_truth.size())
         loss = 0.0
-        for i in range(1, self.n_classes):
+        for i in range(self.n_classes):
             tv = focal_tversky_loss(prediction[:, i], ground_truth[:, i])
             loss += tv * weight[i]
         return loss / self.n_classes

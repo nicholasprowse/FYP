@@ -19,7 +19,7 @@ def get_b16_config():
     """Returns the ViT-B/16 configuration."""
     config = X()
     config.patches = X()
-    config.patches.size = [16, 16]
+    config.patches.size = [8, 8]
     config.hidden_size = 768
     config.transformer = X()
     config.transformer.mlp_dim = 3072
@@ -60,7 +60,7 @@ def get_testing():
 def get_r50_b16_config(dims=2, img_size=224, channels=1, num_classes=2):
     """Returns the Resnet50 + ViT-B/16 configuration."""
     config = get_b16_config()
-    config.patches.grid = [16] * dims
+    config.patches.grid = [4] * dims
     config.resnet = X()
     config.resnet.num_layers = (3, 4, 9)
     config.resnet.width_factor = 1
@@ -91,7 +91,7 @@ def get_embeddings_shape(config):
         grid_size_real = resnet_out_size // patch_size
         return grid_size_real.int().tolist(), patch_size.int().tolist()
     else:
-        patch_size = config.patches["size"]
+        patch_size = config.patches.size
         if type(patch_size) != list:
             patch_size = [patch_size] * config.dims
         return torch.div(torch.tensor(config.img_size), torch.tensor(patch_size), rounding_mode='floor').int().tolist()

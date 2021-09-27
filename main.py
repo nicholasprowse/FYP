@@ -15,13 +15,14 @@ from torchvision.transforms import Compose
 import os
 import matplotlib.pyplot as plt
 import matplotlib
+from output import generate_test_predictions, convert_output_to_nifti
 
 matplotlib.use("Agg")
-data_path = 'data/Task04_Hippocampus_processed'
-out_path = 'out'
+data_path = 'data/Task01_BrainTumour_processed'
+out_path = 'out(brain)'
 n_epoch = 100
 decision_epoch = 100
-initial_lr = 0.35
+initial_lr = 0.1
 load_checkpoint = True
 data_config = json.load(open(join(data_path, 'data.json')))
 device = torch.device(0 if torch.cuda.is_available() else 'cpu')
@@ -59,11 +60,11 @@ dict2D['validation_loader'] = DataLoader(validation2D, batch_size=data_config['b
 dict3D['train_loader'] = DataLoader(train3D, shuffle=True, batch_size=data_config['batch_size3D'])
 dict3D['validation_loader'] = DataLoader(validation3D, batch_size=data_config['batch_size3D'])
 
-model_config2D = model.get_r50_b16_config(dims=2, img_size=data_config['shape'][1:3],
-                                          channels=int(data_config['shape'][0]),
+model_config2D = model.get_r50_b16_config(dims=2, img_size=data_config['shape'][0:2],
+                                          channels=int(data_config['channels']),
                                           num_classes=data_config['n_classes'])
-model_config3D = model.get_r50_b16_config(dims=3, img_size=data_config['shape'][1:4],
-                                          channels=int(data_config['shape'][0]),
+model_config3D = model.get_r50_b16_config(dims=3, img_size=data_config['shape'],
+                                          channels=int(data_config['channels']),
                                           num_classes=data_config['n_classes'])
 
 
@@ -75,17 +76,19 @@ dict3D['optimiser'] = optim.SGD(dict3D['model'].parameters(), lr=initial_lr, mom
 
 dict2D['train_logger'] = []
 dict2D['validation_logger'] = []
+dict2D['dice_logger'] = []
 dict3D['train_logger'] = []
 dict3D['validation_logger'] = []
+dict3D['dice_logger'] = []
 
 dict2D['lr_scheduler'] = LambdaLR(dict2D['optimiser'], lambda ep: (1 - ep / n_epoch) ** 0.9)
 dict3D['lr_scheduler'] = LambdaLR(dict3D['optimiser'], lambda ep: (1 - ep / n_epoch) ** 0.9)
 
-dict2D['start_epoch'] = 0 if not load_checkpoint else util.load_into_dict(dict2D)
-dict3D['start_epoch'] = 0 if not load_checkpoint else util.load_into_dict(dict3D)
+dict2D['start_epoch'] = 0 if not load_checkpoint else util.load_into_dict(dict2D, device)
+dict3D['start_epoch'] = 0 if not load_checkpoint else util.load_into_dict(dict3D, device)
 
-tversky_loss = util.TverskyLoss(data_config['n_classes'])
-ce_loss = CrossEntropyLoss()
+tversky_loss = util.TverskyLoss(data_config['n_classes'], weight=data_config['class_weights'])
+ce_loss = CrossEntropyLoss(weight=torch.tensor(data_config['class_weights'], device=device))
 
 
 def total_loss(out, target):
@@ -97,22 +100,15 @@ def total_loss(out, target):
 dict2D['loss_fn'] = total_loss
 dict3D['loss_fn'] = total_loss
 
-print(f'{dict3D["dims"]}D - LR: {dict3D["lr_scheduler"].get_last_lr()[0]:.3f}, ', end='')
-for epoch in range(dict3D['start_epoch'], decision_epoch):
-    train_and_evaluate(epoch, device, dict3D, data_config['n_classes'])
-
-plt.figure()
-plt.plot(dict3D['train_logger'])
-plt.plot(dict3D['validation_logger'])
-plt.legend(["Training Loss", "Validation Loss"])
-plt.xlabel("Epoch")
-plt.ylabel("Loss")
-plt.title("Loss of 3D network")
-plt.savefig("3D_plot.pdf")
+if not torch.cuda.is_available():
+    util.generate_example_output(dict2D, data_config, device, 100)
+    util.generate_example_output(dict3D, data_config, device, 100)
+    convert_output_to_nifti(out_path, data_config, 'Task04_Hippocampus', '')
+    quit()
 
 print(f'{dict2D["dims"]}D - LR: {dict2D["lr_scheduler"].get_last_lr()[0]:.3f}, ', end='')
 for epoch in range(dict2D['start_epoch'], decision_epoch):
-    train_and_evaluate(epoch, device, dict2D, data_config['n_classes'])
+    train_and_evaluate(epoch, device, dict2D, data_config)
 
 plt.figure()
 plt.plot(dict2D['train_logger'])
@@ -121,7 +117,20 @@ plt.legend(["Training Loss", "Validation Loss"])
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Loss of 2D network")
-plt.savefig("2D_plot.pdf")
+plt.savefig(join(out_path, "2D_plot.pdf"))
+
+print(f'{dict3D["dims"]}D - LR: {dict3D["lr_scheduler"].get_last_lr()[0]:.3f}, ', end='')
+for epoch in range(dict3D['start_epoch'], decision_epoch):
+    train_and_evaluate(epoch, device, dict3D, data_config)
+
+plt.figure()
+plt.plot(dict3D['train_logger'])
+plt.plot(dict3D['validation_logger'])
+plt.legend(["Training Loss", "Validation Loss"])
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Loss of 3D network")
+plt.savefig(join(out_path, "3D_plot.pdf"))
 
 if dict2D['validation_logger'][-1] < dict3D['validation_logger'][-1]:
     final_dict = dict2D
@@ -132,4 +141,6 @@ else:
 
 final_dict['start_epoch'] = max(final_dict['start_epoch'], n_epoch)
 for epoch in range(final_dict['start_epoch'], n_epoch):
-    train_and_evaluate(epoch, device, final_dict, data_config['n_classes'])
+    train_and_evaluate(epoch, device, final_dict, data_config)
+
+generate_test_predictions(final_dict, data_config, device)

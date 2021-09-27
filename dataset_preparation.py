@@ -40,7 +40,7 @@ def prepare_decathlon_dataset(in_path, out_path, name):
         img_path = join(in_path, dataset_json['test'][i])
         shutil.copy(img_path, join(out_path, f'tsImg_{i}.nii.gz'))
 
-    add_json_file(out_path, dataset_json['numTraining'], dataset_json['numTest'], ct)
+    add_json_file(out_path, dataset_json['numTraining'], dataset_json['numTest'], ct, len(dataset_json['labels']))
 
 
 def prepare_ACDC_dataset(path, name):
@@ -176,8 +176,8 @@ def dicom2nib(path, single_channel=False):
         return result
 
 
-def add_json_file(path, num_train, num_test, ct):
-    data = {'num_train': num_train, 'num_test': num_test, 'ct': ct}
+def add_json_file(path, num_train, num_test, ct, n_classes):
+    data = {'num_train': num_train, 'num_test': num_test, 'ct': ct, 'n_classes': n_classes}
     with open(join(path, 'data.json'), 'w') as outfile:
         json.dump(data, outfile)
 

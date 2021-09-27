@@ -4,20 +4,23 @@ from os.path import join
 import torch
 import numpy as np
 from functools import reduce
-from util import center_crop
-from torch.nn.functional import pad
+import util
 
 
 class Loader3D(Dataset):
     def __init__(self, path, transform=None):
-        self.json = json.load(open(join(path, 'data.json')))
-        self.len = self.json['num_train']
-        self.img_size = self.json['shape']
-        self.patch_size = np.array(self.json['patch_size'])
+        self.data_config = json.load(open(join(path, 'data.json')))
+        self.len = self.data_config['num_train']
+        self.img_size = np.array(self.data_config['shape'])
+        self.patch_size = np.array(self.data_config['patch_size'])
+
+        self.patches_along_each_axis = self.data_config['patches_along_each_axis']
+        self.patch_overlap = self.data_config['patch_overlap']
+
+        self.channels = self.data_config['channels']
         self.path = path
         # This is the number of patches along each dimension
-        self.patch_grid_shape = torch.tensor(self.json['patch_grid_shape'])
-        self.num_patches = int(reduce(lambda a, b: a*b, self.patch_grid_shape))
+        self.num_patches = int(reduce(lambda a, b: a * b, self.patches_along_each_axis))
         self.transform = transform
         self.do_transform = transform is not None
 
@@ -33,38 +36,35 @@ class Loader3D(Dataset):
     def __getitem__(self, i):
         image_id = i // self.num_patches
         with np.load(join(self.path, f'train_{image_id}.npz')) as data:
-            img = data['data']
-            lbl = data['label']
+            image = data['image']
+            label = data['label']
 
         # pad tensor to be img_size
-        img = center_crop(img, self.img_size)
-        lbl = center_crop(lbl, self.img_size[1:])
-
+        image = util.center_crop(image, [self.channels] + list(self.img_size))
+        label = util.center_crop(label, self.img_size)
         # The patch coordinates of the patch to extract
-        indexes = np.array([0, 0, 0])
-        products = [1, 1, 1, 1]
-        for j in range(3):
-            products[j+1] = products[j] * int(self.patch_grid_shape[j])
-            indexes[j] = (i % products[j+1]) // products[j]
+        indexes = index_to_patch_location(i, self.patches_along_each_axis)
 
-        lb = (indexes*self.patch_size).astype(int)
-        ub = ((indexes+1)*self.patch_size).astype(int)
-        img = img[:, lb[0]:ub[0], lb[1]:ub[1], lb[2]:ub[2]]
-        lbl = lbl[lb[0]:ub[0], lb[1]:ub[1], lb[2]:ub[2]]
+        lb = (np.minimum(indexes * self.patch_size - indexes * self.patches_along_each_axis,
+                         self.img_size - self.patch_size)).astype(int)
+        ub = (lb + self.patch_size).astype(int)
+        image = image[:, lb[0]:ub[0], lb[1]:ub[1], lb[2]:ub[2]]
+        label = label[lb[0]:ub[0], lb[1]:ub[1], lb[2]:ub[2]]
 
         if self.do_transform:
-            img, label = self.transform((img, lbl))
+            image, label = self.transform((image, label))
 
         # We must copy the numpy arrays as torch does not support numpy arrays with negative strides (flipped arrays)
-        return torch.from_numpy(img.copy()).float(), torch.from_numpy(lbl.copy()).long()
+        return torch.from_numpy(image.copy()).float(), torch.from_numpy(label.copy()).long()
 
 
 class Loader2D(Dataset):
     def __init__(self, path, transform=None):
-        self.json = json.load(open(join(path, 'data.json')))
-        self.img_size = self.json['shape']
-        self.depths = self.json['depths']
-        self.len = self.json['total_depth']
+        self.data_config = json.load(open(join(path, 'data.json')))
+        self.img_size = self.data_config['shape']
+        self.depths = self.data_config['depths']
+        self.channels = self.data_config['channels']
+        self.len = int(sum(self.depths))
         self.path = path
         self.transform = transform
         self.do_transform = transform is not None
@@ -82,20 +82,29 @@ class Loader2D(Dataset):
         image_id = 0
         for j, d in enumerate(self.depths):
             if i >= d:
-                i -= d
+                i -= int(d)
             else:
                 image_id = j
                 break
 
         with np.load(join(self.path, f'train_{image_id}.npz')) as data:
-            img = data['data'][:, :, :, i]
-            lbl = data['label'][:, :, i]
+            image = data['image'][:, :, :, i]
+            label = data['label'][:, :, i]
 
-        img = center_crop(img, self.img_size[:3])
-        lbl = center_crop(lbl, self.img_size[1:3])
+        image = util.center_crop(image, [self.channels] + self.img_size[:2])
+        label = util.center_crop(label, self.img_size[:2])
 
         if self.do_transform:
-            img, lbl = self.transform((img, lbl))
+            image, label = self.transform((image, label))
 
         # We must copy the numpy arrays as torch does not support numpy arrays with negative strides (flipped arrays)
-        return torch.from_numpy(img.copy()).float(), torch.from_numpy(lbl.copy()).long()
+        return torch.from_numpy(image.copy()).float(), torch.from_numpy(label.copy()).long()
+
+
+def index_to_patch_location(index, patches_along_each_axis):
+    indexes = np.array([0, 0, 0])
+    products = [1, 1, 1, 1]
+    for j in range(3):
+        products[j + 1] = products[j] * int(patches_along_each_axis[j])
+        indexes[j] = (index % products[j + 1]) // products[j]
+    return indexes

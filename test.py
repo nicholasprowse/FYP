@@ -1,18 +1,9 @@
 import nibabel as nib
 import torch
-from matplotlib import pyplot as plt
-import json
 from os.path import join
-import os
 
-import model
 import util
 import numpy as np
-import ml_collections
-import dataset_preparation
-import skimage.transform
-import preprocessing
-from model import VisionTransformer, get_r50_b16_config
 
 
 def get_train_img(config, i):
@@ -34,29 +25,25 @@ def main():
 
 
 def main2():
+    import dataset_preparation
     import preprocessing
-    path = '/Users/nicholasprowse/Documents/Engineering/FYP/data'
-    preprocessing.prepare_dataset(path, 'Task04_Hippocampus', 4*1024**3)
+    dataset_preparation.prepare_decathlon_dataset('/Users/nicholasprowse/Documents/Engineering/FYP',
+                                                  'data', 'Task04_Hippocampus')
+    preprocessing.preprocess_dataset('data', 'Task04_Hippocampus', 1024**2)
 
 
 def main4():
-    os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-    config = get_r50_b16_config(dims=3, img_size=[64, 64, 64])
-    config.skip_channels[-1] = 1
-    config.input_channels = 1
-    vt = VisionTransformer(config)
-    batch = torch.zeros([2, 1, 59, 67, 41])
-    print(vt(batch).shape)
+    import dataset_preparation
+    in_path = '/Volumes/One Touch/orig_med_data'
+    out_path = '/Volumes/One Touch/med_data'
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task01_BrainTumour')
+
+
+def main5():
+    import preprocessing
+    path = 'data'
+    preprocessing.preprocess_dataset(path, 'Task01_BrainTumour', 50*1024**2)
 
 
 if __name__ == '__main__':
-    main()
-
-
-def load_dataset_fingerprint(path):
-    config = ml_collections.ConfigDict()
-    dataset = json.load(open(join(path, 'dataset.json')))
-    modalities = [i.lower() for i in dataset['modality']]
-    config.percentile_clip = 'ct' in modalities
-    isotropic = True
-
+    main5()
