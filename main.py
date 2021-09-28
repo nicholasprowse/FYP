@@ -1,7 +1,7 @@
 import torch.optim as optim
 from os.path import join
 import json
-
+import numpy as np
 import util
 import model
 from dataset import Loader3D, Loader2D
@@ -16,18 +16,38 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib
 from output import generate_test_predictions, convert_output_to_nifti
+import argparse
+import random
+
+parser = argparse.ArgumentParser(description="Train segmentation model.")
+
+parser.add_argument("name", help="Name of the dataset", type=str)
+parser.add_argument("--lr", help="learning rate", type=float, default=0.1)
+parser.add_argument("--id", help="Experiment ID to ensure each experiment has a unique output folder",
+                    type=int, default=random.randint(0, 1000000))
+parser.add_argument('--alpha', help="Weighting of false negatives in Tversky Loss", type=float, default=0.7)
+parser.add_argument('--gamma', help='Exponential factor controlling class weighting', type=float, default=0.5)
+parser.add_argument('--mlp_dim', help='Number of nodes in the hidden layer of the MLP', type=int, default=3072)
+parser.add_argument('--transformer_layers', help='Number of transformer layers', type=int, default=12)
+parser.add_argument('--hidden_size', help='Number of channels within the transformer layers', type=int, default=768)
+parser.add_argument('--num_heads', help='Number self attention heads', type=int, default=12)
+
+args = parser.parse_args()
 
 matplotlib.use("Agg")
-data_path = 'data/Task01_BrainTumour_processed'
-out_path = 'out(brain)'
+data_path = join('data', args.name)
+out_path = f'out/experiment_{args.id}'
 n_epoch = 100
 decision_epoch = 100
-initial_lr = 0.1
+initial_lr = args.lr
 load_checkpoint = True
 data_config = json.load(open(join(data_path, 'data.json')))
 device = torch.device(0 if torch.cuda.is_available() else 'cpu')
 if not os.path.exists(out_path):
     os.mkdir(out_path)
+
+with open(join(out_path, f'experiment.json'), 'w') as outfile:
+    json.dump(args.__dict__, outfile, indent=4)
 
 dict2D = {'dims': 2, 'out_path': out_path, 'model_path': join(out_path, 'model2D.pt')}
 dict3D = {'dims': 3, 'out_path': out_path, 'model_path': join(out_path, 'model3D.pt')}
@@ -62,10 +82,19 @@ dict3D['validation_loader'] = DataLoader(validation3D, batch_size=data_config['b
 
 model_config2D = model.get_r50_b16_config(dims=2, img_size=data_config['shape'][0:2],
                                           channels=int(data_config['channels']),
-                                          num_classes=data_config['n_classes'])
+                                          num_classes=data_config['n_classes'],
+                                          mlp_dim=args.mlp_dim,
+                                          num_heads=args.num_heads,
+                                          num_layers=args.transformer_layers,
+                                          hidden_size=args.hidden_size)
+
 model_config3D = model.get_r50_b16_config(dims=3, img_size=data_config['shape'],
                                           channels=int(data_config['channels']),
-                                          num_classes=data_config['n_classes'])
+                                          num_classes=data_config['n_classes'],
+                                          mlp_dim=args.mlp_dim,
+                                          num_heads=args.num_heads,
+                                          num_layers=args.transformer_layers,
+                                          hidden_size=args.hidden_size)
 
 
 dict2D['model'] = model.VisionTransformer(model_config2D).to(device)
@@ -87,7 +116,9 @@ dict3D['lr_scheduler'] = LambdaLR(dict3D['optimiser'], lambda ep: (1 - ep / n_ep
 dict2D['start_epoch'] = 0 if not load_checkpoint else util.load_into_dict(dict2D, device)
 dict3D['start_epoch'] = 0 if not load_checkpoint else util.load_into_dict(dict3D, device)
 
-tversky_loss = util.TverskyLoss(data_config['n_classes'], weight=data_config['class_weights'])
+class_frequency = np.array(data_config['class_frequency'])
+class_weights = 1 / ((class_frequency ** args.gamma) * (np.sum(class_frequency ** -args.gamma)))
+tversky_loss = util.TverskyLoss(data_config['n_classes'], weight=class_weights, alpha=args.alpha)
 ce_loss = CrossEntropyLoss(weight=torch.tensor(data_config['class_weights'], device=device))
 
 
@@ -103,7 +134,7 @@ dict3D['loss_fn'] = total_loss
 if not torch.cuda.is_available():
     util.generate_example_output(dict2D, data_config, device, 100)
     util.generate_example_output(dict3D, data_config, device, 100)
-    convert_output_to_nifti(out_path, data_config, 'Task04_Hippocampus', '')
+    # convert_output_to_nifti(out_path, data_config, 'Task04_Hippocampus', '')
     quit()
 
 print(f'{dict2D["dims"]}D - LR: {dict2D["lr_scheduler"].get_last_lr()[0]:.3f}, ', end='')

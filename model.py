@@ -57,18 +57,21 @@ def get_testing():
     return config
 
 
-def get_r50_b16_config(dims=2, img_size=224, channels=1, num_classes=2):
+def get_r50_b16_config(dims=2, img_size=224, channels=1, num_classes=2, mlp_dim=3072,
+                       num_heads=12, num_layers=12, hidden_size=768):
     """Returns the Resnet50 + ViT-B/16 configuration."""
     config = get_b16_config()
     config.patches.grid = [4] * dims
     config.resnet = X()
     config.resnet.num_layers = (3, 4, 9)
     config.resnet.width_factor = 1
+    config.hidden_size = hidden_size
+    config.transformer.mlp_dim = mlp_dim
+    config.transformer.num_heads = num_heads
+    config.transformer.num_layers = num_layers
     config.dims = dims
     config.img_size = img_size
     config.input_channels = channels
-    config.classifier = 'seg'
-    config.pretrained_path = '../model/vit_checkpoint/imagenet21k/R50+ViT-B_16.npz'
     config.decoder_channels = (256, 128, 64, 16)
     config.skip_channels = [512, 256, 64, channels]
     config.n_classes = num_classes

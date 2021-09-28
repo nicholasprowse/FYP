@@ -184,22 +184,6 @@ class ResNetV2(nn.Module):
                 ))),
         ]))
 
-    """
-        down_sizes = [torch.tensor(config.img_size)]
-        down_sizes.append(1 + (down_sizes[-1] - 1) // 2)
-        down_sizes.append(1 + (down_sizes[-1] - 3) // 2)
-        for i in range(len(self.body)-2):
-            down_sizes.append(1 + (down_sizes[-1] - 1) // 2)
-        up_sizes = [down_sizes[-1]]
-        for i in range(len(self.body)):
-            up_sizes.append(up_sizes[-1] * 2)
-        mode = 'bilinear' if config.dims == 2 else 'trilinear'
-
-        self.up_sample = [nn.Identity() if torch.all(down_sizes[i-3] == up_sizes[2-i]) else
-                          nn.Upsample(tuple(up_sizes[2-i]), mode=mode, align_corners=True)
-                          for i in range(len(self.body))]
-    """
-
     def forward(self, x):
         features = [x]
         x = self.root(x)

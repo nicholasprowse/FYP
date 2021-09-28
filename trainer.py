@@ -11,6 +11,9 @@ def train(optimiser, model, data_loader, device, loss_fn):
     model.train()
     epoch_loss_train = 0.0
     for i, (img, lbl) in enumerate(data_loader):
+        # Each epoch is only 250 mini batches to ensure reasonable training times
+        if i == 250:
+            break
         img, lbl = img.to(device), lbl.to(device)
         out = model(img)
         loss = loss_fn(out, lbl)

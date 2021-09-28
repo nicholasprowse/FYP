@@ -188,10 +188,11 @@ def load_into_dict(training_dict, device):
 
 
 class TverskyLoss(nn.Module):
-    def __init__(self, n_classes, weight=None):
+    def __init__(self, n_classes, alpha=None, eight=None):
         super(TverskyLoss, self).__init__()
         self.n_classes = n_classes
         self.weight = weight
+        self.alpha = alpha
 
     def forward(self, prediction, ground_truth, softmax=False):
         if softmax:
@@ -202,7 +203,7 @@ class TverskyLoss(nn.Module):
             'predict {} & target {} shape do not match'.format(prediction.size(), ground_truth.size())
         loss = 0.0
         for i in range(self.n_classes):
-            tv = focal_tversky_loss(prediction[:, i], ground_truth[:, i])
+            tv = focal_tversky_loss(prediction[:, i], ground_truth[:, i], alpha=self.alpha)
             loss += tv * weight[i]
         return loss / self.n_classes
 
@@ -218,8 +219,8 @@ def tversky_loss(prediction, ground):
     return 1 - tversky(prediction, ground)
 
 
-def focal_tversky_loss(prediction, ground, gamma=0.75):
-    tv = tversky(prediction, ground)
+def focal_tversky_loss(prediction, ground, alpha=0.7, gamma=0.75):
+    tv = tversky(prediction, ground, alpha=alpha)
     return torch.pow((1 - tv), gamma)
 
 

@@ -278,7 +278,7 @@ def obtain_dataset_fingerprint(path, name, memory_constraint):
             class_frequency[int(clazz)] += counts[j] / volume(label.shape)
 
     class_frequency /= config['num_train']
-    config['class_weights'] = 1 / ((class_frequency ** 0.3) * (np.sum(class_frequency ** -0.3)))
+    config['class_frequency'] = class_frequency
     # Calculate various dataset fingerprints based on this information
     median_spacing = np.median(train_spacing, axis=0)
     config['isotropy'] = np.max(median_spacing) / np.min(median_spacing)
