@@ -29,23 +29,26 @@ def prepare_decathlon_dataset(in_path, out_path, name):
         os.mkdir(out_path)
 
     dataset_json = json.load(open(join(in_path, 'dataset.json')))
-    ct = ['ct' in modality.lower() for modality in dataset_json['modality']]
-    for i in range(dataset_json['numTraining']):
+    ct = ['ct' in modality.lower() for modality in dataset_json['modality'].values()]
+    num_train = len(dataset_json['training'])
+    num_test = len(dataset_json['test'])
+
+    for i in range(num_train):
         img_name = dataset_json['training'][i]['image']
         lbl_name = dataset_json['training'][i]['label']
         shutil.copy(join(in_path, img_name), join(out_path, f'trImg_{i}.nii.gz'))
         shutil.copy(join(in_path, lbl_name), join(out_path, f'trLbl_{i}.nii.gz'))
 
-    for i in range(dataset_json['numTest']):
+    for i in range(num_test):
         img_path = join(in_path, dataset_json['test'][i])
         shutil.copy(img_path, join(out_path, f'tsImg_{i}.nii.gz'))
 
-    add_json_file(out_path, dataset_json['numTraining'], dataset_json['numTest'], ct, len(dataset_json['labels']))
+    add_json_file(out_path, num_train, num_test, ct, len(dataset_json['labels']))
 
 
-def prepare_ACDC_dataset(path, name):
-    dataset_path = join(path, name)
-    out_path = join(path, 'temp')
+def prepare_ACDC_dataset(in_path, out_path, name):
+    dataset_path = join(in_path, name)
+    out_path = join(out_path, name)
     if not os.path.exists(out_path):
         os.mkdir(out_path)
 
@@ -54,7 +57,7 @@ def prepare_ACDC_dataset(path, name):
     training_files = os.listdir(train_path)
     # Sort to ensure the files in the train and test set are in the same order
     training_files.sort()
-    index = 0
+    num_train = 0
     for t_file in training_files:
         patient_path = join(train_path, t_file)
         if os.path.isdir(patient_path):
@@ -62,11 +65,11 @@ def prepare_ACDC_dataset(path, name):
             for p_file in patient_files:
                 if 'frame' in p_file and 'gt' not in p_file and p_file[0] != '.':
                     label_name = p_file[0:p_file.index('.')] + '_gt.nii.gz'
-                    shutil.move(join(patient_path, p_file), join(out_path, f'trImg_{index}.nii.gz'))
-                    shutil.move(join(patient_path, label_name), join(out_path, f'trLbl_{index}.nii.gz'))
-                    index += 1
+                    shutil.move(join(patient_path, p_file), join(out_path, f'trImg_{num_train}.nii.gz'))
+                    shutil.move(join(patient_path, label_name), join(out_path, f'trLbl_{num_train}.nii.gz'))
+                    num_train += 1
 
-    index = 0
+    num_test = 0
     testing_file = os.listdir(test_path)
     testing_file.sort()
     for t_file in testing_file:
@@ -75,12 +78,10 @@ def prepare_ACDC_dataset(path, name):
             patient_files = os.listdir(patient_path)
             for p_file in patient_files:
                 if 'frame' in p_file and p_file[0] != '.':
-                    shutil.move(join(patient_path, p_file), join(out_path, f'tsImg_{index}.nii.gz'))
-                    index += 1
+                    shutil.move(join(patient_path, p_file), join(out_path, f'tsImg_{num_test}.nii.gz'))
+                    num_test += 1
 
-    shutil.rmtree(dataset_path, ignore_errors=True)
-    os.mkdir(dataset_path)
-    os.replace(out_path, dataset_path)
+    add_json_file(out_path, num_train, num_test, [False], 4)
 
 
 def prepare_synapse_dataset(path, name):
@@ -177,10 +178,8 @@ def dicom2nib(path, single_channel=False):
 
 
 def add_json_file(path, num_train, num_test, ct, n_classes):
-    data = {'num_train': num_train, 'num_test': num_test, 'ct': ct, 'n_classes': n_classes}
+    data = {'num_train': num_train, 'num_test': num_test,
+            'ct': ct, 'n_classes': n_classes}
     with open(join(path, 'data.json'), 'w') as outfile:
         json.dump(data, outfile)
 
-
-def extract_dataset_signature(path, name):
-    pass

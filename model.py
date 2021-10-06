@@ -89,15 +89,18 @@ def get_embeddings_shape(config):
         grid_size = torch.tensor(config.patches.grid)
         resnet_out_size = torch.tensor(config.img_size)
         for i in range(4):
-            resnet_out_size = (resnet_out_size + 1) // 2
+            offset = -1 if i == 1 else 1
+            resnet_out_size = (resnet_out_size + offset) // 2
         patch_size = torch.clamp(resnet_out_size // grid_size, min=1)
-        grid_size_real = resnet_out_size // patch_size
-        return grid_size_real.int().tolist(), patch_size.int().tolist()
+        grid_size_real = torch.ceil(resnet_out_size / patch_size)
+        total_size = patch_size * grid_size_real
+        padding = torch.ceil((total_size - resnet_out_size) / 2)
+        return grid_size_real.int().tolist(), patch_size.int().tolist(), padding.int().tolist()
     else:
         patch_size = config.patches.size
         if type(patch_size) != list:
             patch_size = [patch_size] * config.dims
-        return torch.div(torch.tensor(config.img_size), torch.tensor(patch_size), rounding_mode='floor').int().tolist()
+        return (torch.tensor(config.img_size) // torch.tensor(patch_size)).int().tolist()
 
 
 class MLP(nn.Module):
@@ -150,7 +153,7 @@ class Attention(nn.Module):
         self.key = Linear(config.hidden_size, self.all_head_size)
         self.value = Linear(config.hidden_size, self.all_head_size)
 
-        self.out = Linear(config.hidden_size, config.hidden_size)
+        self.out = Linear(self.all_head_size, config.hidden_size)
         self.attn_dropout = Dropout(config.transformer.attention_dropout_rate)
         self.proj_dropout = Dropout(config.transformer.attention_dropout_rate)
 
@@ -207,10 +210,9 @@ class Embeddings(nn.Module):
         self.hybrid = None
         self.config = config
         self.hybrid = config.patches.grid is not None
-        embeddings_shape, patch_size = get_embeddings_shape(config)
+        embeddings_shape, patch_size, padding = get_embeddings_shape(config)
         patch_size = tuple(patch_size)
         n_patches = int(reduce(lambda a, b: a * b, embeddings_shape))
-
         if self.hybrid:
             self.hybrid_model = ResNetV2(config)
             in_channels = self.hybrid_model.width * 16
@@ -219,7 +221,8 @@ class Embeddings(nn.Module):
         self.patch_embeddings = conv(in_channels=in_channels,
                                      out_channels=config.hidden_size,
                                      kernel_size=patch_size,
-                                     stride=patch_size)
+                                     stride=patch_size,
+                                     padding=padding)
         self.position_embeddings = nn.Parameter(torch.zeros(1, n_patches, config.hidden_size))
 
         self.dropout = Dropout(config.transformer.dropout_rate)
@@ -395,7 +398,7 @@ class DecoderCup(nn.Module):
                                2 ** (3 - i), skip_channels=skip_channels[i]) for i in range(4)]
         self.blocks = nn.ModuleList(blocks)
 
-        self.embeddings_shape, _ = get_embeddings_shape(config)
+        self.embeddings_shape, _, _ = get_embeddings_shape(config)
 
     def forward(self, hidden_states, features=None):
         batches, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)

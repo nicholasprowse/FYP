@@ -3,7 +3,7 @@
 #SBATCH --job-name=transUNet
 
 ### how much time, this job takes < one minute, we just put 1 hour
-#SBATCH --time=06:00:00
+#SBATCH --time=23:00:00
 
 ### how much memory, 4 GB is plenty for this
 #SBATCH --mem=16000
@@ -19,6 +19,6 @@
 #SBATCH --partition=short,gpu
 
 module load pytorch/1.6-cuda10
-python main.py Task04_Hippocampus_processed --lr 0.1 --id 10 --alpha 0.5 --gamma 0.5 --mlp_dim 3072 --transformer_layers 12 --hidden_size 768 --num_heads 12
+python main.py Task01_BrainTumour_processed --lr 0.1 --id 100 --alpha 0.5 --gamma 0.5 --mlp_dim 3072 --transformer_layers 12 --hidden_size 768 --num_heads 12
 
 exit 0

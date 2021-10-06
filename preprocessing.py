@@ -70,182 +70,13 @@ def get_nonzero_size(image):
     shape = [0] * (image.ndim - 1)
     # Find the max and min nonzero element in each dim and set the shape accordingly
     for dim in range(1, image.ndim):
-        shape[dim-1] = np.max(idx[dim]) - np.min(idx[dim]) + 1
+        shape[dim - 1] = np.max(idx[dim]) - np.min(idx[dim]) + 1
     return tuple(shape)
-
-
-def prepare_dataset(path, name, memory_constraint):
-    """
-    Crops all images in the given dataset to the non-zero region, then saves all of the dataset into a single
-    .npz file. Data set must be organised as follows. All files in one folder, training data has name trImg_#.nii.gz
-    where # is a decimal number, training labels have name trLbl_#.nii.gz, with corresponding number to its image.
-    Test image has name tsImg_#.nii.gz
-    :param path:
-    :param name:
-    :param memory_constraint:
-    :return:
-    """
-    config = first_pass(path, name)
-    second_pass(config, memory_constraint)
-
-
-def first_pass(path, name):
-    """
-    In the first pass of the data preparation process, the images are cropped to the non zero region, sizes and image
-    spacings are determined and the number of classes is determined
-    """
-    import nibabel as nib
-    dataset_path = join(path, name)
-    processed_path = join(path, f'{name}_processed')
-    config = json.load(open(join(dataset_path, 'data.json')))
-    config['path'] = processed_path
-    config['raw_path'] = path
-
-    if not os.path.exists(processed_path):
-        os.mkdir(processed_path)
-
-    shapes = np.zeros((config['num_train'], 4))
-    train_spacing = np.zeros((config['num_train'], 3))
-    classes = np.array([])
-    for i in range(config['num_train']):
-        nib_data = nib.load(join(dataset_path, f'trImg_{i}.nii.gz'))
-        nib_label = nib.load(join(dataset_path, f'trLbl_{i}.nii.gz'))
-        img = nib_data.get_fdata()
-        lbl = nib_label.get_fdata()
-        # Make sure data is 4 dimensional, with channels as first dimension
-        if img.ndim == 3:
-            img = np.expand_dims(img, 0)
-        else:
-            img = np.moveaxis(img, 3, 0)
-
-        train_spacing[i, :] = np.array(nib_data.header.get_zooms()[0:3])
-        img, lbl = crop(img, lbl)
-        classes = np.union1d(classes, lbl)
-        shapes[i, :] = np.array(img.shape)
-
-        # Compressed npz files are around twice as slow (to read) as npy files
-        # Test results: npy: 0.213s, npz: 0.311s, compressed npz: 0.727s
-        data_path = join(processed_path, f'train_{i}.npz')
-        np.savez_compressed(data_path, data=img, label=lbl)
-
-    config['train_spacings'] = train_spacing
-    config['median_spacing'] = np.median(train_spacing, axis=0)
-    config['shape'] = np.max(shapes, axis=0)
-    config['isotropy'] = np.max(config['median_spacing']) / np.min(config['median_spacing'])
-    # We artificially inflate the third axes spacing so that the anisotropic defaults to the third axis if all other
-    # # axes are equal
-    config['median_spacing'][2] *= 1.01
-    config['anisotropic_axis'] = int(np.argmax(config['median_spacing']))
-    config['median_spacing'][2] /= 1.01
-    config['tenth_percentile_spacing'] = np.percentile(train_spacing[config['anisotropic_axis'], :], 10)
-    config['n_classes'] = len(list(classes))
-
-    config['target_spacing'] = config['median_spacing']
-    if config['isotropy'] >= 3:
-        config['target_spacing'][config['anisotropic_axis']] = config['tenth_percentile_spacing']
-
-    test_spacing = np.zeros((config['num_test'], 3))
-    for i in range(config['num_test']):
-        nib_img = nib.load(join(dataset_path, f'tsImg_{i}.nii.gz'))
-        img = nib_img.get_fdata()
-        # Make sure data is 4 dimensional, with channels as first dimension
-        if img.ndim == 3:
-            img = np.expand_dims(img, 0)
-        else:
-            img = np.swapaxes(img, 0, 3)
-
-        test_spacing[i, :] = np.array(nib_img.header.get_zooms()[0:3])
-        img, _ = crop(img, None)
-        data_path = join(processed_path, f'test_{i}.npz')
-        np.savez_compressed(data_path, data=img)
-
-    config['test_spacings'] = test_spacing
-    return config
 
 
 def volume(shape):
     """returns the total number of voxels in an image"""
     return reduce(lambda a, b: a * b, shape)
-
-
-def second_pass(config, memory_constraint):
-    """
-    In the second pass of the data preparation process, we convert the labels into a one hot encoding, resample
-    the images to have a consistent pixel spacing and normalise the intensity of the images. We also determine the patch
-    size based on maximum GPU memory allocation for the batch
-    """
-    config['depths'] = [0] * config['num_train']
-    config['total_depth'] = 0
-    for i in range(config['num_train']):
-        data_path = join(config['path'], f'train_{i}.npz')
-        with np.load(data_path) as data:
-            img = data['data']
-            lbl = data['label']
-            img = normalise(img, config)
-
-            # Move anisotropic axis to the third spatial axis
-            img = np.swapaxes(img, 3, config['anisotropic_axis'] + 1)
-            lbl = np.swapaxes(lbl, 2, config['anisotropic_axis'])
-
-            img, lbl = resize(img, config['train_spacings'][i, :], config, label=lbl)
-
-            config['depths'][i] = img.shape[-1]
-            config['total_depth'] += img.shape[-1]
-
-            np.savez_compressed(data_path, data=img, label=lbl)
-
-    for i in range(config['num_test']):
-        data_path = join(config['path'], f'test_{i}.npz')
-        with np.load(data_path) as data:
-            img = data['data']
-
-            img = normalise(img, config)
-            img, _ = resize(img, config['test_spacings'][i, :], config)
-            np.savez_compressed(data_path, data=img)
-
-    # swap values in shape and spacings, so they are still correct after the anisotropic axis has been changed
-    config['median_spacing'][2], config['median_spacing'][config['anisotropic_axis']] \
-        = config['median_spacing'][config['anisotropic_axis']], config['median_spacing'][2]
-    config['shape'][3], config['shape'][config['anisotropic_axis']+1] \
-        = config['shape'][config['anisotropic_axis']+1], config['shape'][3]
-    # Limits on the batch size
-    min_batch_size = 2
-    max_dataset_coverage_of_batch = 0.05
-    max_voxels_in_batch = max_dataset_coverage_of_batch * config['num_train'] * volume(config['shape'])
-    channels = config['shape'][0]
-    patch_grid_shape = np.array([1, 1, 1])
-    patch_size = np.ceil(config['shape'][1:4] / patch_grid_shape)
-    while min_batch_size * 4 * channels * volume(patch_size) >= memory_constraint:
-        largest_dim = np.argmax(patch_size)
-        patch_grid_shape[largest_dim] *= 2
-        patch_size = np.ceil(config['shape'][1:4] / patch_grid_shape)
-
-    # determine the batch size for both 2D and 3D networks
-    config['shape'][1:] = patch_size * patch_grid_shape
-    config['patch_size'] = patch_size
-    config['patch_grid_shape'] = patch_grid_shape
-    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
-    batch_size_from_coverage = max_voxels_in_batch / (channels * volume(config['shape'][1:4] / patch_grid_shape))
-    config['batch_size3D'] = int(min(batch_size_from_memory, batch_size_from_coverage))
-
-    slice_size = config['shape'][1] * config['shape'][2]
-    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * slice_size))
-    batch_size_from_coverage = max_voxels_in_batch / (channels * slice_size)
-    config['batch_size2D'] = int(min(batch_size_from_memory, batch_size_from_coverage))
-
-    del config['train_spacings']
-    del config['test_spacings']
-    # Convert numpy types to python types for JSON serialization
-    for key, value in config.items():
-        if type(value) == np.ndarray:
-            config[key] = value.tolist()
-        if type(value) == np.int64:
-            config[key] = int(value)
-        if type(value) == np.float64:
-            config[key] = float(value)
-
-    with open(join(config['path'], 'data.json'), 'w') as outfile:
-        json.dump(config, outfile)
 
 
 def obtain_dataset_fingerprint(path, name, memory_constraint):
@@ -268,7 +99,7 @@ def obtain_dataset_fingerprint(path, name, memory_constraint):
         image_nifti = nib.load(join(dataset_path, f'trImg_{i}.nii.gz'))
         image = image_nifti.get_fdata()
         train_spacing[i, :] = np.array(image_nifti.header.get_zooms()[0:3])
-        image = np.expand_dims(image, 0) if image.ndim == 3 else np.moveaxis(image, -1, -0)
+        image = np.expand_dims(image, 0) if image.ndim == 3 else np.moveaxis(image, -1, 0)
         shapes[i, :] = get_nonzero_size(image)
         config['channels'] = image.shape[0]
 
@@ -285,22 +116,31 @@ def obtain_dataset_fingerprint(path, name, memory_constraint):
     # We artificially inflate the third axes spacing so that the anisotropic defaults to the third axis if all other
     # axes are equal
     median_spacing[2] *= 1.01
-    config['anisotropic_axis'] = int(np.argmax(median_spacing))
+    aia = int(np.argmax(median_spacing))
     median_spacing[2] /= 1.01
+    config['anisotropic_axis'] = aia
 
-    config['target_spacing'] = median_spacing
+    config['num_slices'] = np.sum(shapes[:, aia])
+
+    config['target_spacing3d'] = median_spacing.copy()
     if config['isotropy'] >= 3:
-        config['target_spacing'][config['anisotropic_axis']] = \
-            np.percentile(train_spacing[config['anisotropic_axis'], :], 10)
+        config['target_spacing3d'][aia] = np.percentile(train_spacing[:, aia], 10)
+        voxel_increase = volume(config['target_spacing3d'] / median_spacing)
+        config['target_spacing3d'] /= voxel_increase ** (1/3)
 
-    shapes = np.round(shapes * train_spacing / config['target_spacing'])
-    config['depths'] = shapes[:, config['anisotropic_axis']]
+    modified_shapes = np.round(shapes * train_spacing / config['target_spacing3d'])
+    config['shape3d'] = np.max(modified_shapes, axis=0)
 
-    # This contains the shape after all preprocessing
-    config['shape'] = np.max(shapes, axis=0)
     # move anisotropic axis to end
-    config['shape'][2], config['shape'][config['anisotropic_axis']] \
-        = config['shape'][config['anisotropic_axis']], config['shape'][2]
+    config['shape3d'][[2, aia]] = config['shape3d'][[aia, 2]]
+    config['target_spacing3d'][[2, aia]] = config['target_spacing3d'][[aia, 2]]
+
+    # Get 2d spacing and shapes
+    median_spacing[[2, aia]] = median_spacing[[aia, 2]]
+    config['target_spacing2d'] = median_spacing[:2]
+    config['shape2d'] = np.max(shapes, axis=0)
+    config['shape2d'][[2, aia]] = config['shape2d'][[aia, 2]]
+    config['shape2d'] = config['shape2d'][:2]
 
     compute_patch_size(config, memory_constraint)
     compute_batch_size(config, memory_constraint)
@@ -320,77 +160,111 @@ def obtain_dataset_fingerprint(path, name, memory_constraint):
     return config
 
 
+min_batch_size = 2
+
+
 def compute_patch_size(config, memory_constraint):
     """Computes the patch size given memory constraints"""
     # Limits on the batch size
-    min_batch_size = 2
     channels = config['channels']
-    patch_size = config['shape'].copy()
-    while min_batch_size * 4 * channels * volume(patch_size) >= memory_constraint:
-        largest_dim = np.argmax(patch_size)
-        patch_size[largest_dim] = np.ceil(patch_size[largest_dim] / 2)
 
-    config['patch_size'] = patch_size
+    patch_size3d = config['shape3d'].copy()
+    while min_batch_size * 4 * channels * volume(patch_size3d) >= memory_constraint:
+        largest_dim = np.argmax(patch_size3d)
+        patch_size3d[largest_dim] = np.ceil(patch_size3d[largest_dim] / 2)
+    config['patch_size3d'] = patch_size3d
+
+    patch_size2d = config['shape2d'].copy()
+    while min_batch_size * 4 * channels * volume(patch_size2d) >= memory_constraint:
+        largest_dim = np.argmax(patch_size2d)
+        patch_size2d[largest_dim] = np.ceil(patch_size2d[largest_dim] / 2)
+    config['patch_size2d'] = patch_size2d
 
 
+# If there is no overlap this results in a 0 / 0 division,  which is intentional, so we suppress the warnings
+@np.errstate(divide='ignore', invalid='ignore')
 def compute_batch_size(config, memory_constraint):
     """Computes the batch size given the patch size and memory constraints"""
     max_dataset_coverage_of_batch = 0.05
-    patch_size = config['patch_size']
-    channels = config['channels']
-    shape = config['shape']
-    max_batch_size = max_dataset_coverage_of_batch * config['num_train']
-
-    # determine the batch size for both 2D and 3D networks
-    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * volume(patch_size)))
-    config['batch_size3D'] = int(min(batch_size_from_memory, max_batch_size))
-
-    slice_size = config['shape'][0] * config['shape'][1]
-    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * slice_size))
-    max_batch_size *= config['shape'][2]
-    config['batch_size2D'] = int(min(batch_size_from_memory, max_batch_size))
-
     minimum_patch_overlap = 20
-    config['patches_along_each_axis'] = \
-        np.ceil((shape - minimum_patch_overlap) / (patch_size - minimum_patch_overlap))
+    channels = config['channels']
 
-    # No overlap results in a 0 / 0 division, so suppress the warnings as this is intentional
-    with np.errstate(divide='ignore'):
-        config['patch_overlap'] = \
-            np.floor((config['patches_along_each_axis'] * patch_size - shape) / (
-                    config['patches_along_each_axis'] - 1))
-        config['patch_overlap'] = np.nan_to_num(config['patch_overlap'])
+    # determine the batch size for 3D network
+    patch_size3d = config['patch_size3d']
+    shape3d = config['shape3d']
+    max_batch_size = max(max_dataset_coverage_of_batch * config['num_train'], min_batch_size)
+    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * volume(patch_size3d)))
+    config['batch_size3d'] = int(min(batch_size_from_memory, max_batch_size))
+
+    # Determine the number of patches along each axis and how much they will overlap
+    config['patches_along_each_axis3d'] = \
+        np.ceil((shape3d - minimum_patch_overlap) / (patch_size3d - minimum_patch_overlap))
+    config['patch_overlap3d'] = \
+        np.floor((config['patches_along_each_axis3d'] * patch_size3d - shape3d) / (
+                config['patches_along_each_axis3d'] - 1))
+    config['patch_overlap3d'] = np.nan_to_num(config['patch_overlap3d'])
+
+    # determine the batch size for 2D network
+    patch_size2d = config['patch_size2d']
+    shape2d = config['shape2d']
+    max_batch_size = max(max_dataset_coverage_of_batch * config['num_slices'], min_batch_size)
+    batch_size_from_memory = np.floor(memory_constraint / (4 * channels * volume(patch_size2d)))
+    config['batch_size2d'] = int(min(batch_size_from_memory, max_batch_size))
+    config['patches_along_each_axis2d'] = \
+        np.ceil((shape2d - minimum_patch_overlap) / (patch_size2d - minimum_patch_overlap))
+    config['patch_overlap2d'] = \
+        np.floor((config['patches_along_each_axis2d'] * patch_size2d - shape2d) / (
+                config['patches_along_each_axis2d'] - 1))
+    config['patch_overlap2d'] = np.nan_to_num(config['patch_overlap2d'])
 
 
 def preprocess_dataset(path, name, memory_constraint):
     import nibabel as nib
     config = obtain_dataset_fingerprint(path, name, memory_constraint)
+    print('Dataset fingerprint obtained')
+    slice_no = 0
     for i in range(config['num_train']):
         label = nib.load(join(config['raw_path'], f'trLbl_{i}.nii.gz'))
         image = nib.load(join(config['raw_path'], f'trImg_{i}.nii.gz'))
-        image, label = preprocess_img(config, image.get_fdata(), image.header.get_zooms(), label=label.get_fdata())
-        np.savez_compressed(join(config['path'], f'train_{i}.npz'), image=image, label=label)
+        image2d, label2d = \
+            preprocess_img(config, image.get_fdata(), image.header.get_zooms(), dims=2, label=label.get_fdata())
+        image3d, label3d = \
+            preprocess_img(config, image.get_fdata(), image.header.get_zooms(), dims=3, label=label.get_fdata())
+        np.savez_compressed(join(config['path'], f'train_{i}.npz'), image=image3d, label=label3d)
+        for j in range(image2d.shape[-1]):
+            np.savez_compressed(join(config['path'], f'slice_{slice_no}.npz'),
+                                image=image2d[:, :, :, j], label=label2d[:, :, j])
+            slice_no += 1
+        print(f"Processed {i}/{config['num_train']} training images")
 
     for i in range(config['num_test']):
         image = nib.load(join(config['raw_path'], f'tsImg_{i}.nii.gz'))
         # No preprocessing here, but we do save the spacings so we can do preprocessing later
         np.savez_compressed(join(config['path'], f'test_{i}.npz'), image=image.get_fdata(),
                             spacing=image.header.get_zooms())
+        print(f"Processed {i}/{config['num_test']} testing images")
 
 
-def preprocess_img(config, image, spacing, label=None):
+def preprocess_img(config, image, spacing, dims=3, label=None):
     """
     Fully preprocess an entire image and label given the numpy arrays and the pixel spacings
     Takes in raw numpy images with no changes after loading the nifti file
+
+    dims determines how the image is resized, NOT the number of dimensions of the image. The image should always be 3
+    or four dimensions with a 3 dimensional label. If dims is 2, then the image is only resized along the in plane axis
+    for use in the 2D model. If dims is 3, then the image is resized along all dimensions for use in the 3D model
     """
-    image = np.expand_dims(image, 0) if image.ndim == 3 else np.moveaxis(image, -1, -0)
+    image = np.expand_dims(image, 0) if image.ndim == 3 else np.moveaxis(image, -1, 0)
     image = np.swapaxes(image, 3, config['anisotropic_axis'] + 1)
+    spacing = np.array(spacing[0:3])
+    spacing[[config['anisotropic_axis'], 2]] = spacing[[2, config['anisotropic_axis']]]
+
     if label is not None:
         label = np.swapaxes(label, 2, config['anisotropic_axis'])
 
     image, label = crop(image, label)
     image = normalise(image, config)
-    size = np.round(np.array(image.shape[1:]) * np.array(spacing[0:3]) / config['target_spacing'])
+    size = np.round(np.array(image.shape[1:dims+1]) * spacing[:dims] / config[f'target_spacing{dims}d'][:dims])
     image = resize_image(image, size, config)
     label = resize_label(label, size, config)
     return image, label
@@ -405,80 +279,116 @@ def resize(image, spacing, config, label=None):
 def resize_label(label, size, config):
     """
     Resizes the label to the given size according to the isotropic rules
-
-    :param label: input label
+    Returns 2 labels, the first is one that has been resized for the 3D model and the second is one that has been
+    resized for the 2D model
+    :param label: input multi hot encoded label
     :param size: tuple or list containing the size of the output
     :param config: data config containing at least the isotropy
-    :return: a non one hot encoded label
+    :return: a multi hot encoded label
     """
     if label is None:
         return None
-    size = tuple(size)
-    if np.all(size == label.shape):
-        return label
+    size = tuple([int(i) for i in size])
+    if size == label.shape[:len(size)]:
+        return label.astype(np.uint8)
 
-    classes = config['n_classes']
-    util.one_hot(label, classes, batch=False)
-    if config['isotropy'] >= 3:
-        first_size = (classes, size[0], size[1], label.shape[2])
-        label = skimage.transform.resize(np.float(label), first_size, order=3)
-        # Resize with nearest neighbor along 3rd dimension
-        label = skimage.transform.resize(label, (classes,) + size, order=0)
-        return np.argmax(label, dim=0)
-
-    label = skimage.transform.resize(label.astype(float), (classes,) + size, order=3)
-    return np.argmax(label, axis=0)
+    one_hot = util.one_hot(label, config['n_classes'], batch=False)
+    return resize_one_hot_label(one_hot, size, config)
 
 
 def resize_one_hot_label(label, size, config):
     """
     Resizes the label to the given size according to the isotropic rules
+    If the provided size is only 2 dimensional, then only the first 2 spatial dimensions are resized
 
     Note: the returned label is not one hot encoded
     :param label: input label (as a one hot encoded label)
     :param size: tuple or list containing the size of the output
     :param config: data config containing at least the isotropy
-    :return: a non one hot encoded label
+    :return: a multi hot encoded label
     """
     if label is None:
         return None
-    size = tuple(size)
-    if np.all(size == label.shape[1:]):
-        return np.argmax(label, axis=0)
+    size = tuple([int(i) for i in size])
+    if size == label.shape[1:1+len(size)]:
+        multi_hot = np.argmax(label, axis=0)
+        return multi_hot.astype(np.uint8)
 
     classes = label.shape[0]
-    if config['isotropy'] >= 3:
-        first_size = (classes, size[0], size[1], label.shape[2])
-        label = skimage.transform.resize(np.float(label), first_size, order=3)
-        # Resize with nearest neighbor along 3rd dimension
-        label = skimage.transform.resize(label, (classes,) + size, order=0)
-        return np.argmax(label, dim=0)
+    label = label.astype(float)
+    # 2D label is only resized in plane, while 3D label is resized along all dimensions
+    label2d = np.zeros((classes, size[0], size[1], label.shape[3]))
+    label3d = np.zeros((classes,) + size)
 
-    label = skimage.transform.resize(label.astype(float), (classes,) + size, order=3)
-    return np.argmax(label, axis=0)
+    # If we are only resizing in 2 dimensions, or the image is isotropic then resize in plane
+    if len(size) == 2 or config['isotropy'] >= 3:
+        for clazz in range(classes):
+            # First order for in plane resizing
+            for j in range(label.shape[-1]):
+                label2d[clazz, :, :, j] = skimage.transform.resize(label[clazz, :, :, j], size[:2], order=1)
+
+        # If we entered this if statement due to 2d resizing, then we are done
+        if len(size) == 2:
+            return np.argmax(label2d, axis=0).astype(np.uint8)
+
+        # Otherwise, we entered due to anisotropy, so resize along 3rd dimension
+        for clazz in range(classes):
+            # Resize with nearest neighbor along 3rd dimension
+            for j in range(size[0]):
+                label3d[clazz, j, :, :] = \
+                    skimage.transform.resize(label2d[clazz, j, :, :], size[1:], order=0)
+
+        return np.argmax(label3d, axis=0).astype(np.uint8)
+
+    # Otherwise, we are simply resizing all dimensions at once
+    for clazz in range(classes):
+        label3d[clazz] = skimage.transform.resize(label[clazz], size, order=1)
+    return np.argmax(label3d, axis=0).astype(np.uint8)
 
 
 def resize_image(image, size, config):
     """
     Resizes the image to the given size based on the isotropic rules
+    If the provided size is only 2 dimensional, then only the first 2 spatial dimensions are resized
 
     :param image: The 4 dimensional image to resize
-    :param size: The 3 dimensional size to resize it to as a tuple or list
+    :param size: The 2 or 3 dimensional size to resize it to as a tuple or list
     :param config: Data config containing at least the isotropy
     :return:
     """
-    size = tuple(size)
-    if np.all(size == image.shape[1:]):
-        return image
+    size = tuple([int(i) for i in size])
+    if size == image.shape[1:1+len(size)]:
+        return image.astype(np.float32)
 
     channels = image.shape[0]
-    if config['isotropy'] >= 3:
-        first_size = (channels, size[0], size[1], image.shape[2])
-        image = skimage.transform.resize(image, first_size, order=3)
-        # Resize with nearest neighbor along 3rd dimension
-        return skimage.transform.resize(image, (channels,) + size, order=0)
+    # 2D image is only resized in plane, while 3D image is resized along all dimensions
+    image3d = np.zeros((channels,) + size)
+    image2d = np.zeros((channels, size[0], size[1], image.shape[3]))
 
-    return skimage.transform.resize(image, (channels,) + size, order=3)
+    # If we are only resizing in 2 dimensions, or the image is isotropic then resize in plane
+    if len(size) == 2 or config['isotropy'] >= 3:
+        for channel in range(channels):
+            # 3rd order interpolation for in plane resizing
+            for j in range(image.shape[-1]):
+                image2d[channel, :, :, j] = skimage.transform.resize(image[channel, :, :, j], size[:2], order=3)
+
+        # If we entered this if statement due to 2d resizing, then we are done
+        if len(size) == 2:
+            return image2d.astype(np.float32)
+
+        # Otherwise, we entered due to anisotropy, so resize along 3rd dimension
+        for channel in range(channels):
+            # Resize with nearest neighbor along 3rd dimension
+            for j in range(size[0]):
+                image3d[channel, j, :, :] = \
+                    skimage.transform.resize(image2d[channel, j, :, :], size[1:], order=0)
+
+        return image3d.astype(np.float32)
+
+    # Otherwise, we are simply resizing all dimensions at once
+    for channel in range(channels):
+        image3d[channel] = skimage.transform.resize(image[channel].astype(float), size, order=3)
+    return image3d.astype(np.float32)
 
 
 def normalise(data, config):
