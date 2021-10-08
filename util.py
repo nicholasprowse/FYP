@@ -132,15 +132,18 @@ def compute_dice_score(ground_truth, prediction):
     return np.array(score)
 
 
-def load_into_dict(training_dict, device):
+def load_into_dict(training_dict, device, model='latest'):
     """
     Loads the given saved model into the dictionary, and returns the next training epoch that needs to be completed
     """
-    if os.path.isfile(training_dict['model_path']):
-        check_point = torch.load(training_dict['model_path'], map_location=device)
-        training_dict['optimiser'].load_state_dict(check_point['optimiser_state_dict'])
-        training_dict['model'].load_state_dict(check_point['model_state_dict'])
-        training_dict['lr_scheduler'].load_state_dict(check_point['scheduler_state_dict'])
+    if os.path.isfile(training_dict[f'{model}_model_path']):
+        check_point = torch.load(training_dict[f'{model}_model_path'], map_location=device)
+        if 'optimiser' in training_dict:
+            training_dict['optimiser'].load_state_dict(check_point['optimiser_state_dict'])
+        if 'model' in training_dict:
+            training_dict['model'].load_state_dict(check_point['model_state_dict'])
+        if 'lr_scheduler' in training_dict:
+            training_dict['lr_scheduler'].load_state_dict(check_point['scheduler_state_dict'])
         training_dict['train_logger'] = check_point['train_loss']
         training_dict['validation_logger'] = check_point['valid_loss']
         training_dict['dice_logger'] = check_point['dice_score']

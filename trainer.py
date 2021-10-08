@@ -6,7 +6,6 @@ import os
 from os.path import join
 from postprocessing import remove_all_but_the_largest_connected_component
 
-
 epoch_length = 250
 
 
@@ -67,7 +66,7 @@ def evaluate(model, data_loader, device, loss_fn):
             loss_validation += loss.item()
             mini_batches += 1
 
-    do_component_suppression = dice_score_component_suppression[-1] > dice_score[-1]
+    do_component_suppression = bool(dice_score_component_suppression[-1] > dice_score[-1])
     if do_component_suppression:
         dice_score = dice_score_component_suppression
     return loss_validation / mini_batches, dice_score / mini_batches, do_component_suppression
@@ -86,13 +85,14 @@ def train_and_evaluate(device, training_dict):
     training_dict['dice_logger'].append(dice_score.tolist())
     training_dict['completed_epochs'] += 1
 
-    if 'best_performance' not in training_dict or training_dict['best_performance']['dice_score'][-1] > dice_score[-1]:
+    if 'best_performance' not in training_dict or training_dict['best_performance']['dice_score'][-1] < dice_score[-1]:
         training_dict['best_performance'] = {'completed_epochs': training_dict['completed_epochs'],
                                              'train_loss': training_loss, 'validation_loss': validation_loss,
                                              'dice_score': dice_score.tolist(),
                                              'component_suppression': training_dict['do_component_suppression']}
-        save_model(training_dict)
+        save_model(training_dict, model='best')
 
+    save_model(training_dict, model='latest')
     with open(join(training_dict['out_path'], f'loss{training_dict["dims"]}D.json'), 'w') as outfile:
         json.dump({'epochs_completed': training_dict["completed_epochs"],
                    'mini_batches_completed': training_dict["completed_mini_batches"],
@@ -109,15 +109,14 @@ def train_and_evaluate(device, training_dict):
         print(f'{training_dict["dims"]}D - LR: {lr:.3f}, ', end='')
 
     # If quit file exists, gracefully exit
-    if os.path.exists('terminate.txt'):
-        os.remove('terminate.txt')
-        save_model(training_dict)
-        print("\nUser requested termination of program. \n"
-              f"{training_dict['dims']}D model successfully saved after {training_dict['completed_epochs']} epochs")
+    terminate_file = join(training_dict['out_path'], 'terminate.txt')
+    if os.path.exists(terminate_file):
+        os.remove(terminate_file)
+        print("\nUser requested termination of program.")
         quit()
 
 
-def save_model(training_dict):
+def save_model(training_dict, model='latest'):
     torch.save({
         'completed_epochs': training_dict['completed_epochs'],
         'completed_mini_batches': training_dict['completed_mini_batches'],
@@ -129,4 +128,4 @@ def save_model(training_dict):
         'dice_score': training_dict['dice_logger'],
         'do_component_suppression': training_dict['do_component_suppression'],
         'best_performance': training_dict['best_performance']
-    }, training_dict['model_path'])
+    }, training_dict[f'{model}_model_path'])

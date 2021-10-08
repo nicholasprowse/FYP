@@ -37,10 +37,10 @@ parser.add_argument('--num_heads', help='Number self attention heads', type=int,
 
 args = parser.parse_args()
 matplotlib.use("Agg")
-data_path = join('data', args.name)
+data_path = join('data/processed', args.name)
 out_path = f'out/experiment_{args.id}'
 max_epoch = 1000
-max_mini_batch = 20000
+max_mini_batch = 10000
 initial_lr = args.lr
 load_checkpoint = True
 data_config = json.load(open(join(data_path, 'data.json')))
@@ -87,7 +87,8 @@ model_config2D = model.get_r50_b16_config(dims=2, img_size=data_config['shape2d'
 
 dict2D = {'dims': 2,
           'out_path': out_path,
-          'model_path': join(out_path, 'model2D.pt'),
+          'latest_model_path': join(out_path, 'latest_model2D.pt'),
+          'best_model_path': join(out_path, 'best_model2D.pt'),
           'completed_epochs': 0,
           'completed_mini_batches': 0,
           'dataset': Loader2D(data_path, transform),
@@ -103,7 +104,7 @@ num_validation = len(dict2D['dataset']) - num_train
 train2D, validation2D = torch.utils.data.random_split(dict2D['dataset'], [num_train, num_validation],
                                                       generator=torch.Generator().manual_seed(42))
 dict2D['train_loader'] = DataLoader(train2D, shuffle=True, batch_size=data_config['batch_size2d'])
-dict2D['validation_loader'] = DataLoader(validation2D, batch_size=data_config['batch_size2d'])
+dict2D['validation_loader'] = DataLoader(validation2D, shuffle=True, batch_size=data_config['batch_size2d'])
 dict2D['optimiser'] = optim.SGD(dict2D['model'].parameters(), lr=initial_lr, momentum=0.99, nesterov=True)
 dict2D['lr_scheduler'] = LambdaLR(dict2D['optimiser'], lambda ep: (1 - ep / max_mini_batch) ** 0.8)
 if load_checkpoint:
@@ -120,6 +121,7 @@ plt.legend(["Training Loss", "Validation Loss"])
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Loss of 2D network")
+plt.ylim((0, 0.2))
 plt.savefig(join(out_path, "2D_plot.pdf"))
 
 plt.figure()
@@ -144,7 +146,8 @@ model_config3D = model.get_r50_b16_config(dims=3, img_size=data_config['patch_si
 
 dict3D = {'dims': 3,
           'out_path': out_path,
-          'model_path': join(out_path, 'model3D.pt'),
+          'latest_model_path': join(out_path, 'latest_model3D.pt'),
+          'best_model_path': join(out_path, 'best_model3D.pt'),
           'completed_epochs': 0,
           'completed_mini_batches': 0,
           'dataset': Loader3D(data_path, transform),
@@ -159,7 +162,7 @@ num_validation = len(dict3D['dataset']) - num_train
 train3D, validation3D = torch.utils.data.random_split(dict3D['dataset'], [num_train, num_validation],
                                                       generator=torch.Generator().manual_seed(42))
 dict3D['train_loader'] = DataLoader(train3D, shuffle=True, batch_size=data_config['batch_size3d'])
-dict3D['validation_loader'] = DataLoader(validation3D, batch_size=data_config['batch_size3d'])
+dict3D['validation_loader'] = DataLoader(validation3D, shuffle=True, batch_size=data_config['batch_size3d'])
 dict3D['optimiser'] = optim.SGD(dict3D['model'].parameters(), lr=initial_lr, momentum=0.99, nesterov=True)
 dict3D['lr_scheduler'] = LambdaLR(dict3D['optimiser'], lambda ep: (1 - ep / max_mini_batch) ** 0.8)
 if load_checkpoint:
@@ -183,6 +186,7 @@ plt.legend(["Training Loss", "Validation Loss"])
 plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Loss of 3D network")
+plt.ylim((0, 0.2))
 plt.savefig(join(out_path, "3D_loss_plot.pdf"))
 
 plt.figure()
@@ -199,5 +203,7 @@ else:
     final_dict = dict3D
     del dict2D
 
+# Reload the dictionary, as the final epoch may not have been the best
+util.load_into_dict(final_dict, device, model='best')
 final_dict['model'] = final_dict['model'].to(device)
 generate_test_predictions(final_dict, data_config, device)

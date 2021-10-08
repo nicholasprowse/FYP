@@ -36,13 +36,22 @@ def main4():
     import dataset_preparation
     in_path = '/Volumes/One Touch/orig_med_data'
     out_path = '/Volumes/One Touch/med_data'
-    dataset_preparation.prepare_ACDC_dataset(in_path, out_path, 'ACDC')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task01_BrainTumour')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task02_Heart')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task04_Hippocampus')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task05_Prostate')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task06_Lung')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task07_Pancreas')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task08_HepaticVessel')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task09_Spleen')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task10_Colon')
 
 
 def main5():
     import preprocessing
-    path = 'data'
-    preprocessing.preprocess_dataset(path, 'Task04_Hippocampus', 10*1024**2)
+    path = 'data/raw'
+    out_path = 'data/processed'
+    preprocessing.preprocess_dataset(path, out_path, 'Task10_Colon', 10*1024**2)
 
 
 if __name__ == '__main__':
