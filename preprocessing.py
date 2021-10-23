@@ -79,16 +79,13 @@ def volume(shape):
     return reduce(lambda a, b: a * b, shape)
 
 
-def obtain_dataset_fingerprint(path, out_path, name, memory_constraint):
-    import nibabel as nib
-    dataset_path = join(path, name)
-    processed_path = join(out_path, name)
-    config = json.load(open(join(dataset_path, 'data.json')))
-    config['path'] = processed_path
-    config['raw_path'] = dataset_path
+def obtain_dataset_fingerprint(in_path, out_path, memory_constraint):
+    config = json.load(open(join(in_path, 'data.json')))
+    config['path'] = out_path
+    config['raw_path'] = in_path
 
-    if not os.path.exists(processed_path):
-        os.mkdir(processed_path)
+    if not os.path.exists(out_path):
+        os.mkdir(out_path)
 
     train_spacing = np.zeros((config['num_train'], 3))
     shapes = np.zeros((config['num_train'], 3))
@@ -96,14 +93,14 @@ def obtain_dataset_fingerprint(path, out_path, name, memory_constraint):
 
     # First pass through the data is just to obtain the spacings of all the images
     for i in range(config['num_train']):
-        image_nifti = nib.load(join(dataset_path, f'trImg_{i}.nii.gz'))
-        image = image_nifti.get_fdata()
-        train_spacing[i, :] = np.array(image_nifti.header.get_zooms()[0:3])
+        data = np.load(join(in_path, f'train_{i}.npz'))
+        image = data['image']
+        train_spacing[i, :] = np.array(data['spacing'][0:3])
         image = np.expand_dims(image, 0) if image.ndim == 3 else np.moveaxis(image, -1, 0)
         shapes[i, :] = get_nonzero_size(image)
         config['channels'] = image.shape[0]
 
-        label = nib.load(join(dataset_path, f'trLbl_{i}.nii.gz')).get_fdata()
+        label = data['label']
         unique, counts = np.unique(label, return_counts=True)
         for j, clazz in enumerate(unique):
             class_frequency[int(clazz)] += counts[j] / volume(label.shape)
@@ -124,23 +121,28 @@ def obtain_dataset_fingerprint(path, out_path, name, memory_constraint):
     config['target_spacing3d'] = median_spacing.copy()
     if config['isotropy'] >= 3:
         config['target_spacing3d'][aia] = np.percentile(train_spacing[:, aia], 10)
-        voxel_increase = volume(config['target_spacing3d'] / median_spacing)
-        config['target_spacing3d'] /= voxel_increase ** (1/3)
 
     modified_shapes = np.round(shapes * train_spacing / config['target_spacing3d'])
     config['shape3d'] = np.max(modified_shapes, axis=0)
+
+    if volume(config['shape3d']) > 256 ** 3:
+        excess_voxel_ratio = volume(config['shape3d']) / (256 ** 3)
+        config['target_spacing3d'] *= (excess_voxel_ratio ** (1/3))
+        modified_shapes = np.round(shapes * train_spacing / config['target_spacing3d'])
+        config['shape3d'] = np.max(modified_shapes, axis=0)
 
     # move anisotropic axis to end
     config['shape3d'][[2, aia]] = config['shape3d'][[aia, 2]]
     config['target_spacing3d'][[2, aia]] = config['target_spacing3d'][[aia, 2]]
 
     # Get 2d spacing and shapes
-    median_spacing[[2, aia]] = median_spacing[[aia, 2]]
-    config['target_spacing2d'] = median_spacing[:2]
-    modified_shapes = np.round(shapes * train_spacing / median_spacing)
+    config['target_spacing2d'] = median_spacing
+    modified_shapes = np.round(shapes * train_spacing / config['target_spacing2d'])
     config['shape2d'] = np.max(modified_shapes, axis=0)
     config['shape2d'][[2, aia]] = config['shape2d'][[aia, 2]]
+    config['target_spacing2d'][[2, aia]] = config['target_spacing2d'][[aia, 2]]
     config['shape2d'] = config['shape2d'][:2]
+    config['target_spacing2d'] = config['target_spacing2d'][:2]
 
     compute_patch_size(config, memory_constraint)
     compute_batch_size(config, memory_constraint)
@@ -218,31 +220,24 @@ def compute_batch_size(config, memory_constraint):
     config['patch_overlap2d'] = np.nan_to_num(config['patch_overlap2d'])
 
 
-def preprocess_dataset(path, out_path, name, memory_constraint):
-    import nibabel as nib
-    config = obtain_dataset_fingerprint(path, out_path, name, memory_constraint)
+def preprocess_dataset(in_path, out_path, memory_constraint):
+    config = obtain_dataset_fingerprint(in_path, out_path, memory_constraint)
     print('Dataset fingerprint obtained')
     slice_no = 0
     for i in range(config['num_train']):
-        label = nib.load(join(config['raw_path'], f'trLbl_{i}.nii.gz'))
-        image = nib.load(join(config['raw_path'], f'trImg_{i}.nii.gz'))
+        data = np.load(join(config['raw_path'], f'train_{i}.npz'))
+        label = data['label']
+        image = data['image']
+        spacing = data['spacing']
         image2d, label2d = \
-            preprocess_img(config, image.get_fdata(), image.header.get_zooms(), dims=2, label=label.get_fdata())
+            preprocess_img(config, image, spacing, dims=2, label=label)
         image3d, label3d = \
-            preprocess_img(config, image.get_fdata(), image.header.get_zooms(), dims=3, label=label.get_fdata())
+            preprocess_img(config, image, spacing, dims=3, label=label)
         np.savez_compressed(join(config['path'], f'train_{i}.npz'), image=image3d, label=label3d)
         for j in range(image2d.shape[-1]):
             np.savez_compressed(join(config['path'], f'slice_{slice_no}.npz'),
                                 image=image2d[:, :, :, j], label=label2d[:, :, j])
             slice_no += 1
-        print(f"Processed {i+1}/{config['num_train']} training images")
-
-    for i in range(config['num_test']):
-        image = nib.load(join(config['raw_path'], f'tsImg_{i}.nii.gz'))
-        # No preprocessing here, but we do save the spacings so we can do preprocessing later
-        np.savez_compressed(join(config['path'], f'test_{i}.npz'), image=image.get_fdata(),
-                            spacing=image.header.get_zooms())
-        print(f"Processed {i+1}/{config['num_test']} testing images")
 
 
 def preprocess_img(config, image, spacing, dims=3, label=None):

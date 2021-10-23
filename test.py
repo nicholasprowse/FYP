@@ -1,70 +1,76 @@
-import nibabel as nib
-import torch
-from os.path import join
-
-import util
-import numpy as np
-
-
-def get_train_img(config, i):
-    data = np.load(join(config.path, f'train_{i}.npz'))
-    return data['data'], data['label']
-
-
-def main():
-    path_img = 'data/Task04_Hippocampus/TrImg_0.nii.gz'
-    path_lbl = 'data/Task04_Hippocampus/TrLbl_0.nii.gz'
-    data = nib.load(path_img).get_fdata()
-    lbl = nib.load(path_lbl).get_fdata()
-    print(data.shape)
-    print(lbl.shape)
-
-    lbl = np.moveaxis(np.array(util.one_hot(torch.from_numpy(lbl))), 1, 0)
-    util.img2gif(data, 2, 'hippocampus.gif')
-    util.img2gif(data, 2, 'hippocampus_labelled.gif', label=lbl)
+def create_examples():
+    from util import img2gif, one_hot
+    import numpy as np
+    import os
+    tasks = os.listdir('data/prepared')
+    tasks.sort()
+    for task in tasks:
+        if task[0] == '.':
+            continue
+        print(task)
+        data = np.load(os.path.join('data/prepared', task, 'train_0.npz'))
+        image = data['image']
+        label = data['label']
+        if image.ndim == 3:
+            image = np.expand_dims(image, 3)
+        for i in range(image.shape[3]):
+            img2gif(image[:, :, :, i], 2, f'data/examples/{task}({i}).gif', label=one_hot(label, batch=False))
 
 
-def main2():
-    import dataset_preparation
-    import preprocessing
-    dataset_preparation.prepare_decathlon_dataset('/Users/nicholasprowse/Documents/Engineering/FYP',
-                                                  'data', 'Task04_Hippocampus')
-    preprocessing.preprocess_dataset('data', 'Task04_Hippocampus', 50*1024**2)
+def create_output_visualisations(task_name, task_id):
+    from os.path import join
+    import numpy as np
+    import json
+    from util import img2gif, one_hot
+    out_path = f'out/experiment_{task_id}'
+    data_path = f'data/prepared/{task_name}'
+    config = json.load(open(join(data_path, 'data.json')))
+    for i in range(config['num_test']):
+        prediction = np.load(join(out_path, f'pred_{i}.npz'))['prediction']
+        prediction = one_hot(prediction, n_classes=config['n_classes'], batch=False)
+        prediction = prediction.swapaxes(1, 2)
+        prediction = prediction.swapaxes(2, 3)
+        image = np.load(join(data_path, f'test_{i}.npz'))['image']
+        if image.ndim == 3:
+            image = np.expand_dims(image, 3)
+
+        for channel in range(image.shape[3]):
+            img_channel = image if image.ndim == 3 else image[:, :, :, channel]
+            print(img_channel.shape, prediction.shape)
+            img2gif(img_channel, 0, join(out_path, f'pred_{i}({channel}).gif'), label=prediction)
 
 
 def main4():
     import dataset_preparation
-    in_path = '/Volumes/One Touch/orig_med_data'
-    out_path = '/Volumes/One Touch/med_data'
+    in_path = 'data/raw'
+    out_path = 'data/prepared'
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task09_Spleen')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task01_BrainTumour')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task02_Heart')
+    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task03_Liver')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task04_Hippocampus')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task05_Prostate')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task06_Lung')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task07_Pancreas')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task08_HepaticVessel')
-    dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task09_Spleen')
     dataset_preparation.prepare_decathlon_dataset(in_path, out_path, 'Task10_Colon')
 
 
 def main5():
-    import preprocessing
-    path = 'data/raw'
-    out_path = 'data/processed'
-    preprocessing.preprocess_dataset(path, out_path, 'Task10_Colon', 10*1024**2)
+    import output
+    tasks = ['BrainTumour', 'Heart', 'Liver', 'Hippocampus', 'Prostate', 'Lung', 'Pancreas',
+             'HepaticVessel', 'Spleen', 'Colon']
+    for i, task in enumerate(tasks):
+        idx = f'{i+1}'.zfill(2)
+        task_name = f'Task{idx}_{task}'
+        output.convert_output_to_nifti(task_name, 401 + i)
+        print('Completed', task_name)
 
 
 if __name__ == '__main__':
-    # util.generate_plot([300, 301, 302, 303, 304, 305, 306, 307], 'beta')
-    main5()
-
-
-# Start shape: (512, 512, 49)
-# Spacing: (0.917969, 0.917969, 5.0)
-# Target spacing: [0.7988280057907104, 0.7988280057907104, 1.5]
-# Final shape: (1, 588, 588, 163)
-# Processed 0/303 training images
-# Start shape: (512, 512, 66)
-# Spacing: (0.951172, 0.951172, 3.75)
-# Target spacing: [0.7988280057907104, 0.7988280057907104, 1.5]
-# Final shape: (1, 610, 610, 165)
+    import preprocessing
+    preprocessing.obtain_dataset_fingerprint('data/prepared/Task10_Colon', 'data/Task10_Colon', 10 * 1024**2)
+    # create_examples()
+    # import dataset_preparation
+    # dataset_preparation.prepare_cremi_dataset('data/raw', 'data/prepared', 'CREMI')
+    # create_output_visualisations('CREMI', 413)

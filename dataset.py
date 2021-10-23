@@ -1,6 +1,6 @@
 from torch.utils.data import Dataset
 import json
-from os.path import join, exists
+from os.path import join
 import torch
 import numpy as np
 from functools import reduce
@@ -66,7 +66,8 @@ class Loader2D(Dataset):
 
         self.patches_along_each_axis = self.data_config['patches_along_each_axis2d']
         self.patch_overlap = self.data_config['patch_overlap2d']
-        self.len = int(self.data_config['num_slices'])
+        self.num_patches = int(reduce(lambda a, b: a * b, self.patches_along_each_axis))
+        self.len = int(self.data_config['num_slices'] * self.num_patches)
         self.channels = self.data_config['channels']
         self.path = path
         self.transform = transform
@@ -82,7 +83,8 @@ class Loader2D(Dataset):
         self.do_transform = False
 
     def __getitem__(self, i):
-        with np.load(join(self.path, f'slice_{i}.npz')) as data:
+        image_id = i // self.num_patches
+        with np.load(join(self.path, f'slice_{image_id}.npz')) as data:
             image = data['image']
             label = data['label']
 

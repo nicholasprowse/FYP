@@ -1,6 +1,8 @@
 import torch
 import numpy as np
-from os.path import join
+from os.path import join, exists
+import os
+import json
 import preprocessing
 from preprocessing import volume
 from util import center_crop, img2gif, one_hot
@@ -12,7 +14,7 @@ from postprocessing import remove_all_but_the_largest_connected_component
 def generate_test_predictions(training_dict, data_config, device):
     with torch.no_grad():
         for i in range(data_config['num_test']):
-            with np.load(join(data_config['path'], f'test_{i}.npz')) as data:
+            with np.load(join(data_config['raw_path'], f'test_{i}.npz')) as data:
                 image = data['image']
                 spacing = data['spacing']
             if training_dict['dims'] == 2:
@@ -20,15 +22,15 @@ def generate_test_predictions(training_dict, data_config, device):
             else:
                 prediction = get_prediction_3d(image, spacing, training_dict, data_config, device)
             np.savez_compressed(join(training_dict['out_path'], f'pred_{i}.npz'), prediction=prediction)
-            prediction = one_hot(prediction, n_classes=data_config['n_classes'], batch=False)
-
-            empty_label = np.zeros_like(prediction)
-            empty_label[0, :, :, :] = 1
-            label = np.concatenate([empty_label, prediction], axis=2)
-            for channel in range(data_config['channels']):
-                img_channel = image if image.ndim == 3 else image[:, :, :, channel]
-                img_channel = np.tile(img_channel, (1, 2, 1))
-                img2gif(img_channel, 2, join(training_dict['out_path'], f'pred_{i}({channel}).gif'), label=label)
+            # prediction = one_hot(prediction, n_classes=data_config['n_classes'], batch=False)
+            #
+            # empty_label = np.zeros_like(prediction)
+            # empty_label[0, :, :, :] = 1
+            # label = np.concatenate([empty_label, prediction], axis=2)
+            # for channel in range(data_config['channels']):
+            #     img_channel = image if image.ndim == 3 else image[:, :, :, channel]
+            #     img_channel = np.tile(img_channel, (1, 2, 1))
+            #     img2gif(img_channel, 2, join(training_dict['out_path'], f'pred_{i}({channel}).gif'), label=label)
 
 
 def get_prediction_3d(image, spacing, training_dict, data_config, device):
@@ -150,25 +152,27 @@ def stitch_patches_together(patches, patches_along_each_axis, patch_overlap, img
     n = len(patches_along_each_axis)
     num_patches = patches.shape[0]
     num_classes = patches.shape[1]
-    patch_size = patches.shape[2:2+n]
+    patch_size = np.array(patches.shape[2:2+n]).astype(int)
     for dim in range(n):
+        # Create a gaussian kernel with stddev half of the overlap
+        size = patch_overlap[dim] / 2
+        base_kernel = np.arange(patch_overlap[dim])
+        base_kernel = np.exp(-(base_kernel ** 2) / (2 * (size / 2) ** 2))
+        # Normalise it, so when the other patch is added (with a kernel in the other direction),
+        # they sum to 1
+        base_kernel /= (base_kernel + base_kernel[::-1])
+        # Do the same but for the final overlap which is different
+        size = ((patches_along_each_axis * patch_size - img_shape -
+                 (patches_along_each_axis - 2) * patch_overlap) / 2)[dim]
+        final_kernel = np.arange(size)
+        final_kernel = np.exp(-(final_kernel ** 2) / (2 * (size / 2) ** 2))
+        final_kernel /= (final_kernel + final_kernel[::-1])
+        # Shape to reshape kernel, so it runs along the dimension dim
+        kernel_shape = [1] * 4
+        kernel_shape[dim + 1] = patch_size[dim]
+
         for j in range(num_patches):
             patch_location = index_to_patch_location(j, patches_along_each_axis)
-            # Create a gaussian kernel with stddev half of the overlap
-            size = patch_overlap[dim] / 2
-            base_kernel = np.arange(patch_overlap[dim])
-            base_kernel = np.exp(-(base_kernel ** 2) / (2 * (size / 2) ** 2))
-            # Normalise it, so when the other patch is added (with a kernel in the other direction),
-            # they sum to 1
-            base_kernel /= (base_kernel + base_kernel[::-1])
-            # Do the same but for the final overlap which is different
-            size = ((num_patches * patch_size - img_shape - (num_patches - 2) * patch_overlap) / 2)[dim]
-            final_kernel = np.arange(size)
-            final_kernel = np.exp(-(final_kernel ** 2) / (2 * (size / 2) ** 2))
-            final_kernel /= (final_kernel + final_kernel[::-1])
-            # Shape to reshape kernel, so it runs along the dimension dim
-            kernel_shape = [1] * 4
-            kernel_shape[dim+1] = patch_size[dim]
             # Every patch except the final 2 gets a base kernel on the right
             if patch_location[dim] < patches_along_each_axis[dim] - 2:
                 # Add in ones to match the patch size
@@ -215,13 +219,12 @@ def stitch_patches_together(patches, patches_along_each_axis, patch_overlap, img
 
 def generate_training_output(training_dict, data_config, device, idx=0):
     """Saves a visualisation of the model output and the ground truth"""
-    import nibabel as nib
     dims = training_dict['dims']
 
-    image_nib = nib.load(join(data_config['raw_path'], f'trImg_{idx}.nii.gz'))
-    label = nib.load(join(data_config['raw_path'], f'trLbl_{idx}.nii.gz')).get_fdata()
-    image = image_nib.get_fdata()
-    spacing = image_nib.header.get_zooms()
+    data = np.load(join(data_config['raw_path'], f'train_{idx}.npz'))
+    label = data['label']
+    image = data['image']
+    spacing = data['spacing']
 
     if training_dict['dims'] == 2:
         prediction = get_prediction_2d(image, spacing, training_dict, data_config, device)
@@ -231,19 +234,43 @@ def generate_training_output(training_dict, data_config, device, idx=0):
     prediction = one_hot(prediction, data_config['n_classes'], batch=False)
     label = one_hot(label, data_config['n_classes'], batch=False)
     # Stitch the three images together and save a visualisation of it
-    empty_label = np.zeros_like(label)
-    empty_label[0, :, :, :] = 1
-    label = np.concatenate([empty_label, label, prediction], axis=2)
     for channel in range(data_config['channels']):
         img_channel = image if image.ndim == 3 else image[:, :, :, channel]
-        img_channel = np.tile(img_channel, (1, 3, 1))
-        img2gif(img_channel, 2, join(training_dict['out_path'], f"{dims}D_example_{idx}({channel}).gif"), label=label)
+        img2gif(img_channel, 2, join(training_dict['out_path'], f"{dims}D_train_gt_{idx}({channel}).gif"), label=label)
+        img2gif(img_channel, 2, join(training_dict['out_path'],
+                                     f"{dims}D_train_pred_{idx}({channel}).gif"), label=prediction)
 
 
-def convert_output_to_nifti(out_path, data_config, folder_name, file_name):
+def convert_output_to_nifti(task_name, task_id):
+    """
+    Converts the test outputs (npz files) generated by main.py into nifti images
+    """
     import nibabel as nib
-    for i in range(data_config['num_test']):
-        with np.load(join(out_path, f'pred_{i}.npz')) as data:
-            image = data['prediction']
-            nifti = nib.Nifti1Image(image, np.eye(4))
-            nib.save(nifti, join(out_path, f'pred_{i}.nii.gz'))
+    liver_exclusions = [141, 156, 160, 161, 162, 164, 167, 182, 189, 190]
+    out_path = 'out/predictions'
+    if not exists(out_path):
+        os.mkdir(out_path)
+    if not exists(join(out_path, task_name)):
+        os.mkdir(join(out_path, task_name))
+    dataset_json = json.load(open(join('data/raw', task_name, 'dataset.json')))
+    output_exists = exists(f'out/experiment_{task_id}')
+    for i, path in enumerate(dataset_json['test']):
+        name = path[path.rindex('/') + 1:]
+        excluded = False
+        for n in liver_exclusions:
+            if 'Liver' in task_name and str(n) in name:
+                excluded = True
+
+        if excluded:
+            continue
+
+        nib_image = nib.load(join('data/raw', task_name, path))
+        if not output_exists:
+            prediction = np.zeros(nib_image.shape[:3]).astype(np.uint8)
+            nifti = nib.Nifti1Image(prediction, nib_image.affine)
+            nib.save(nifti, join(out_path, task_name, name))
+        else:
+            with np.load(join(f'out/experiment_{task_id}', f'pred_{i}.npz')) as data:
+                prediction = data['prediction'].astype(np.uint8)
+                nifti = nib.Nifti1Image(prediction, nib_image.affine)
+                nib.save(nifti, join(out_path, task_name, name))

@@ -21,7 +21,9 @@ class RandomFlip:
 
 class RandomRotateAndScale:
     def __init__(self, config, prob_rotate=0.2, prob_scale=0.2):
-        self.anisotropic = config['isotropy'] >= 3
+        patch_size = np.array(config['patch_size3d'])
+        self.anisotropic = np.max(patch_size) >= 3 * np.min(patch_size)
+        self.anisotropic_axis = np.argmax(patch_size)
         self.prob_scale = prob_scale
         self.prob_rotate = prob_rotate
 
@@ -40,7 +42,9 @@ class RandomRotateAndScale:
             if img.ndim == 4:
                 angle = (torch.rand(3)-0.5)*60
                 if self.anisotropic:
-                    angle[:2] /= 2
+                    angle /= 2
+                    angle[self.anisotropic_axis] *= 2
+
                 img = ndimage.rotate(img, angle[0], (2, 3), reshape=False)
                 img = ndimage.rotate(img, angle[1], (1, 3), reshape=False)
                 img = ndimage.rotate(img, angle[2], (1, 2), reshape=False)
@@ -73,33 +77,24 @@ class RandomGaussianBlur:
 
 
 class RandomGaussianNoise:
-    def __init__(self, prob=0.15):
+    def __init__(self, prob=0.2):
         self.prob = prob
 
     def __call__(self, sample):
         img, lbl = sample
-        noise = np.array(torch.randn(img.shape) * 0.1)
-        return img + noise, lbl
+        if torch.rand(1) > self.prob:
+            stddev = torch.rand(1) + 0.1
+            img += np.array(torch.randn(img.shape) * stddev)
+        return img, lbl
 
 
 class RandomBrightnessAdjustment:
-    def __init__(self, prob=0.15):
+    def __init__(self, prob=0.2):
         self.prob = prob
 
     def __call__(self, sample):
         img, lbl = sample
         if torch.rand(1) <= self.prob:
             img *= float((torch.rand(1) * 0.6 + 0.7))
-
-        return img, lbl
-
-
-# Not sure what to do here
-class RandomContrastAdjustment:
-    def __init__(self, prob=0.15):
-        self.prob = prob
-
-    def __call__(self, sample):
-        img, lbl = sample
 
         return img, lbl

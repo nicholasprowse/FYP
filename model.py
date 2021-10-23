@@ -323,13 +323,12 @@ class ConvReLU(nn.Sequential):
     """
 
     def __init__(self, in_channels, out_channels, kernel_size, padding=0, stride=1, dims=2,
-                 batch_norm=True):
+                 group_norm=True):
         conv_type = Conv2d if dims == 2 else Conv3d
-        conv = conv_type(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=not batch_norm)
+        conv = conv_type(in_channels, out_channels, kernel_size, stride=stride, padding=padding, bias=not group_norm)
         relu = nn.ReLU(inplace=True)
-        norm_type = nn.BatchNorm2d if dims == 2 else nn.BatchNorm3d
-        bn = norm_type(out_channels)
-        super(ConvReLU, self).__init__(conv, bn, relu)
+        gn = nn.GroupNorm(16, out_channels) if group_norm else nn.Identity()
+        super(ConvReLU, self).__init__(conv, gn, relu)
 
 
 class DecoderBlock(nn.Module):
@@ -343,12 +342,12 @@ class DecoderBlock(nn.Module):
     block. By defualt there are zero skip channels (no skip connection).
     """
 
-    def __init__(self, config, in_channels, out_channels, out_scale, skip_channels=0, batch_norm=True):
+    def __init__(self, config, in_channels, out_channels, out_scale, skip_channels=0, group_norm=True):
         super().__init__()
         self.conv1 = ConvReLU(in_channels + skip_channels, out_channels,
-                              dims=config.dims, kernel_size=3, padding=1, batch_norm=batch_norm)
+                              dims=config.dims, kernel_size=3, padding=1, group_norm=group_norm)
         self.conv2 = ConvReLU(out_channels, out_channels, dims=config.dims, kernel_size=3, padding=1,
-                              batch_norm=batch_norm)
+                              group_norm=group_norm)
         self.mode = 'bilinear' if config.dims == 2 else 'trilinear'
         self.out_scale = out_scale
 
@@ -382,7 +381,7 @@ class DecoderCup(nn.Module):
         head_channels = 512
 
         self.conv_more = ConvReLU(config.hidden_size, head_channels, dims=config.dims, kernel_size=3, padding=1,
-                                  batch_norm=True)
+                                  group_norm=True)
         decoder_channels = config.decoder_channels
         in_channels = [head_channels] + list(decoder_channels[:-1])
         out_channels = decoder_channels

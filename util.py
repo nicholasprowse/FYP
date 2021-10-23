@@ -70,12 +70,19 @@ def img2gif(img, dim, file, label=None):
             label_colours[:, :, :, 0] += i * label[i + 1] / num_labels
 
         label_colours = 255 * colors.hsv_to_rgb(label_colours)
+        label_alpha = np.zeros(label.shape[1:])
+        label_alpha[label[0] == 0] = 0.5
+
+        label_alpha = np.expand_dims(label_alpha, 3)
+        label_alpha = np.tile(label_alpha, [1, 1, 1, 3])
+
         # Uncomment this line to get just the label, without original image
         # img = np.zeros_like(img)
-        img[label[0] == 0] = label_colours[label[0] == 0]
+        # img[label[0] == 0] = label_colours[label[0] == 0]
+        img = label_colours * label_alpha + img * (1 - label_alpha)
 
-    img = np.moveaxis(img, dim, 0)
-    images = [img[i, :, :] for i in range(img.shape[0])]
+    img = np.moveaxis(img, dim, 0).astype(np.uint8)
+    images = [img[i] for i in range(img.shape[0])]
     imageio.mimsave(file, images)
 
 
@@ -204,17 +211,20 @@ def generate_plot(exp_numbers, param_of_interest):
     val_loss = [[]] * len(exp_numbers)
     dice_score = [[]] * len(exp_numbers)
     param_vals = [0] * len(exp_numbers)
+    print(f'Variation in {param_of_interest}:')
     for i, experiment in enumerate(exp_numbers):
         info = json.load(open(join(path, f'experiment_{experiment}/experiment.json')))
         param_vals[i] = info[param_of_interest]
         data = json.load(open(join(path, f'experiment_{experiment}/loss2D.json')))
         val_loss[i] = data['validation']
         dice_score[i] = [x[-1] for x in data['dice']]
-        print(f"{param_of_interest}={param_vals[i]} - Loss: {min(val_loss[i]):.4f}", end='')
+        print(param_vals[i], end='')
         min_dice_score = [max([x[j] for x in data['dice']]) for j in range(len(data['dice'][0]))]
         for j, score in enumerate(min_dice_score):
-            print(f", {j}: {score:.3f}", end='')
-        print()
+            if j == 0:
+                continue
+            print(f" & {score:.3f}", end='')
+        print('\\\\')
 
     plt.figure()
     for loss in val_loss:
