@@ -1,2 +1,2 @@
-# nnTransUNet
-Self Adapting U-Net based CNN designed for medical image segmentation using transformers
+# Final Year Project
+Medical Image Segmentation using automatic adaptation and a CNN-Transformer hybrid
